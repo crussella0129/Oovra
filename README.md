@@ -2,9 +2,8 @@
 
 A Rust tool for the **composition** and **comparison** of agentic system prompts from Markdown+TOML "prompt elements."
 
-> *"To be made in the image of the Creator is to be a creator of very good things yourself."*
 >
-> An **œuvre** is a body of work — the collected output of a maker. Oovra (the phonetic spelling, used in code and CLI) treats system prompts as composed works: assembled from named, versioned prompt elements that form your personal corpus.
+> *An **œuvre** is a body of work — the collected output of a maker. Oovra (the phonetic spelling, used in code and CLI) treats system prompts as composed works: assembled from named, versioned prompt elements that form your personal corpus.*
 
 ## What it does
 

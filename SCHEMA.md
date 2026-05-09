@@ -1,373 +1,243 @@
----
-title: "Oovra File Format Schema"
-project: "[[Oovra]]"
-related:
-  - "[[Oovra Build Guide]]"
-  - "[[Policy Node Composer]]"
-  - "[[Claude Thoughts Vault]]"
-tags:
-  - oovra
-  - schema
-  - reference
-  - agent-facing
-  - markdown
-  - toml
-status: canonical
-version: 0.1
-audience: humans-and-agents
-created: 2026-05-06
----
++++
+name = "Oovra File Format Schema"
+order = 0
+id = "oovra-schema"
+version = "0.1.0"
+meta = "Canonical schema for Oovra prompt-element files. Read this first if you are an agent authoring Oovra files."
++++
 
-# Oovra File Format Schema
+# Oovra File Format Schema (v0.1)
 
-This is the canonical schema definition for Oovra files. It is written to be read by both humans and AI agents. If you are an agent reading this to learn how to author Oovra files, the schema rules in this document are sufficient — you do not need any external context beyond what is here.
+This is the canonical schema for Oovra files. It is written for both humans and AI agents. If you are an agent authoring Oovra files, the rules in this document are sufficient — you do not need any external context.
 
-If anything in this document conflicts with the Rust source code, **the source code is wrong** and should be fixed to match this document. This file is the contract.
+If anything in this document conflicts with the Rust source, **the source is wrong** and should be fixed to match this document. This file is the contract.
 
 ---
 
 ## What an Oovra File Is
 
-An Oovra file is a single `.md` file containing two parts:
+An Oovra file is a single `.md` file with two parts:
 
-1. A **TOML frontmatter block** at the very top of the file, delimited by `+++` on its own line at the start and `+++` on its own line at the end. This block carries the file's metadata in TOML syntax.
-2. A **Markdown body** following the closing `+++` delimiter, separated from it by exactly one blank line. This block carries the file's content as freeform Markdown.
+1. A **TOML frontmatter block** delimited by `+++` on its own line at the top and `+++` on its own line at the end.
+2. A **Markdown body** following the closing `+++`, separated by exactly one blank line.
 
-Every Oovra file has both parts. A file missing either part is not a valid Oovra file and will be rejected by the parser.
-
----
-
-## The `kind` Field — The Most Important Field in the Schema
-
-Every Oovra frontmatter block must contain a `kind` field. The value of this field tells Oovra (and any agent reading the file) what role the file plays in the system. The `kind` field discriminates which schema rules apply to the rest of the frontmatter.
-
-Two values are valid in this version of the schema:
-
-- `kind = "node"` — the file is a hand-authored or agent-authored atomic policy node. Its body is the prose policy itself.
-- `kind = "completed"` — the file is a tool-emitted rendered prompt produced by Oovra's Compose operator. Its body is the assembled output; its frontmatter records the recipe that produced it.
-
-A third value, `"bundle"`, is reserved for future use and must not be set by current authors.
-
-If the `kind` field is missing, malformed, or holds any value other than `"node"` or `"completed"`, the parser will reject the file with an error.
+A file missing either part is rejected.
 
 ---
 
-## Delimiter Rules (Read This Carefully)
+## One Schema, One Discriminator: `order`
 
-The frontmatter delimiter is exactly three plus signs (`+++`) on a line by themselves. **Not** three dashes (`---`). The choice of `+++` over `---` is intentional: `---` is the Jekyll/YAML-frontmatter convention, and using `+++` unambiguously signals "this is TOML frontmatter" without requiring the parser to peek inside.
+Every Oovra file is a **prompt element**. There is no `kind` field. Instead, a numeric `order` field tells the parser (and the agent) what role the file plays:
 
-Specific rules:
+- **`order = 0`** — atomic, hand-authored. A self-consistent sentence or paragraph that holds together on its own.
+- **`order = 1`** — a composition of order-0 elements, produced by `oovra compose`.
+- **`order = N` (N ≥ 2)** — a composition produced by `oovra compose` from inputs that include at least two elements at order `N-1`.
 
-- The opening `+++` must be the very first line of the file. Not a blank line. Not a comment. The first line.
-- The closing `+++` must be on its own line. Nothing else may appear on that line.
-- After the closing `+++`, there must be exactly one blank line, then the Markdown body.
-- The body itself may contain `+++` characters anywhere, including at the start of lines. The parser only cares about the first two `+++` lines in the file.
+You cannot hand-author a file with `order >= 1`: the parser rejects any file with `order > 0` that lacks a `composed_of` recipe. Use `oovra compose` to produce higher-order elements.
 
-A correct minimal file looks like:
+### How `order` is computed
+
+When `oovra compose` produces an element from inputs, it computes the output's order:
 
 ```
-+++
-kind = "node"
-id = "example-node"
-version = "1.0.0"
-tags = []
-+++
-
-This is the body.
+let H = max(input.order for input in inputs)
+let C = count of inputs whose order == H
+output_order = if C > 1 then H + 1 else H
 ```
 
-A common mistake to avoid: do not put any whitespace before or after the `+++` on its delimiter lines. The line must consist of exactly the three plus signs and a newline.
+Worked examples:
+
+| Inputs | Result | Why |
+|---|---|---|
+| 3× order-0 | order 1 | 3 peers at the top level → climb |
+| 2× order-1 | order 2 | 2 peers at top → climb |
+| 1× order-1 + 4× order-0 | order 1 | only 1 peer at top → no climb |
+| 1× order-2 + 1× order-1 + 5× order-0 | order 2 | only 1 peer at top → no climb |
+| 2× order-2 + 1× order-1 | order 3 | 2 peers at top → climb |
+
+The order encodes "compositional depth" — how many distinct levels of peer composition went into producing this element.
 
 ---
 
-## Schema for `kind = "node"`
+## Delimiter Rules
 
-A node is the atomic unit of policy in Oovra. One node expresses one internally consistent rule, instruction, or fragment of guidance that can be reused across many completed policies.
+The frontmatter delimiter is exactly `+++` on a line by itself — **not** `---`. The choice is intentional: `---` signals YAML; `+++` signals TOML; an Oovra file is unambiguous from its first line.
+
+Strict rules:
+- The opening `+++` must be the first line of the file.
+- The closing `+++` must be on its own line.
+- Exactly one blank line follows the closing `+++`, then the body.
+- The body may contain `+++` characters anywhere (they're just text).
+
+---
+
+## Schema for All Prompt Elements
 
 ### Required fields
 
-| Field | TOML type | Constraints | Description |
-|---|---|---|---|
-| `kind` | string | must equal `"node"` | Discriminates this file as a policy node. |
-| `id` | string | kebab-case, unique across the library | The node's stable identifier. Used in references from completed policies. Must not change once published. |
-| `version` | string | valid semver (e.g. `"1.0.0"`, `"2.3.1-rc1"`) | The node's version. Bump on every meaningful body change. Used for version pinning by completed policies. |
-| `tags` | array of strings | may be empty | Categorization tags. Become Obsidian tags when the library is opened as an Obsidian vault. |
-
-### Optional fields
-
-| Field | TOML type | Description |
+| Field | TOML type | Constraints |
 |---|---|---|
-| `name` | string | Human-readable display name. If absent, tools should display the `id`. |
-| `description` | string | One-line summary of the node's purpose. |
-| `requires` | array of strings | IDs of other nodes this one depends on. Compose may use this in v0.2 for automatic dependency expansion. |
-| `conflicts_with` | array of strings | IDs of other nodes this one cannot coexist with in a single composition. |
-| `author` | string | The author of the node (human name, agent name, or system identifier). |
-| `created` | string | ISO 8601 date or datetime when the node was first created. |
-| `notes` | string | Free-form notes from the author. Not consumed by Oovra. |
+| `name` | string | non-empty; the human-readable display name |
+| `order` | non-negative integer | 0 for atomic; tool-computed for composed |
+| `id` | string | kebab-case (lowercase, digits, hyphens; no leading/trailing/double hyphens); unique across the library |
+| `version` | string | valid semver (e.g. `"1.0.0"`, `"2.3.1-rc1"`) |
+| `meta` | string | the customizable description; may be empty (`""`) |
 
-### Body rules for nodes
+### Required when the element is composed (i.e. has a `composed_of` recipe)
 
-The body is freeform Markdown. The body holds the actual policy text — what the node "says" when included in a composition.
+| Field | TOML type | Constraints |
+|---|---|---|
+| `generated_at` | string | RFC 3339 timestamp (e.g. `"2026-05-09T14:23:15Z"`) |
+| `render_mode` | string | identifies the renderer; v0.1 supports `"markdown-h2"` |
+| `body_level` | non-negative integer | the **physical body delimiter level** — always `max(input.order) + 1` at compose time. Distinct from `order`; see "Two integers" below. |
+| `composed_of` | array of inline tables `{id, version}` | the immediate inputs (one level down) in compose order; non-empty |
 
-The body should:
+These four fields are **jointly required**: when `composed_of` is present, the other three must also be present. When `composed_of` is absent, all four must be absent (and `order` must be `0` — see invariants below).
 
-- Be **internally consistent**: a node should express one coherent policy that makes sense in isolation, without requiring adjacent nodes for context.
-- Be **portable**: the body should read correctly when included in any composition, not just one specific composition.
-- Be **the right size**: typically one to five sentences expressing one coherent policy. Single sentences are usually too small; multi-paragraph bodies are usually too big.
+### Invariants between fields
 
-The body may contain Obsidian-style wiki-links (`[[other-node-id]]`) to indicate semantic relationships to other nodes. Oovra ignores these — they're invisible to the parser — but Obsidian renders them as live links and includes them in the graph view. Use them when the relationship matters; do not force them where they don't fit.
+- A hand-authored element has `order = 0`, no `composed_of`, no companions. The validator rejects any other shape.
+- A composed element has `composed_of` plus all three companions. Its `order` is computed by the formula above; its `body_level` is computed independently (see below).
+- Therefore: `composed_of.is_none()` ⇒ `order == 0`, and the converse direction is permitted (a composed element CAN have `order = 0` — the single-input edge case from the formula).
 
-The body may contain standard Markdown: headers, lists, code blocks, emphasis, links. There are no restrictions beyond those of Markdown itself.
+### Two integers, not one: `order` vs `body_level`
 
-### Example: a complete node file
+These look similar but answer different questions:
+
+- **`order`** is the *logical* compositional depth. It only climbs when the user's formula's "≥2 peers at the maximum input order" condition is met. This is the user-meaningful number — "how many distinct levels of composition went into this artifact."
+- **`body_level`** is the *physical* delimiter level used by the body. It is always `max(input.order) + 1`. This is what makes the body parser unambiguous.
+
+For homogeneous compositions (all inputs at the same order), the two coincide. For mixed-order compositions where the maximum-order count is 1, they diverge: `order` stays at the input maximum, `body_level` climbs anyway. The divergence is what keeps the body parser from colliding with inner delimiters.
+
+### Body rules
+
+- **For `order = 0`**: the body is freeform Markdown — the actual prompt text. It must be non-empty after stripping whitespace.
+- **For composed elements** (those with a `composed_of` field): the body is a sequence of K complete sub-element files (each with their own frontmatter), wrapped in chiral level-aware delimiters whose tilde count is set by `body_level`. See below.
+
+---
+
+## Body Delimiter Scheme (composed elements only)
+
+When `oovra compose` produces a composed element, its body is the **concatenation of the full file content of each input** (frontmatter + body of each input), wrapped in chiral delimiters whose tilde count is determined by the parent's `body_level` field.
+
+| `body_level` | Open | Close |
+|---|---|---|
+| 1 | `~~>>` | `~~<<` |
+| 2 | `~~~>>` | `~~~<<` |
+| N | `(N+1)` tildes + `>>` | `(N+1)` tildes + `<<` |
+
+The parser reads `body_level` from the element's header and scans for delimiters with exactly that tilde count.
+
+**Properties:**
+
+- **Chiral**: open ≠ close. Mismatched delimiters are a parse error.
+- **Strictly monotonic**: a level-N delimiter has *more* tildes than any level less than N. This means the parser for an order-N body, scanning for `(N+1)` tildes, ignores every inner level-(N−k) delimiter.
+- **Each chunk is itself a complete Oovra file.** This means `decompose --full` can recursively split bodies and recover every leaf — including all metadata (name, version, meta) — without consulting any external state.
+
+### Example: an order-1 body
 
 ```
+~~>>
 +++
-kind = "node"
-id = "refusal-policy-strict"
-version = "1.2.0"
-tags = ["safety", "production", "refusal"]
 name = "Strict Refusal Policy"
-description = "Refuse harmful requests with a brief, non-preachy decline."
-requires = ["role-declaration"]
-author = "Charles Russell"
-created = "2026-04-15"
-+++
-
-When asked to produce content that would cause concrete harm — including
-weapons synthesis, malware, or content sexualizing minors — decline briefly
-and without lecturing. Do not explain at length why the request is harmful;
-a single clear sentence of decline is enough. Then offer a constructive
-alternative if one exists.
-
-This policy assumes the [[role-declaration]] node is also included in the
-composition; it relies on that node to establish the assistant's general
-posture toward the user.
-```
-
----
-
-## Schema for `kind = "completed"`
-
-A completed policy is the rendered output of Oovra's Compose operator. It is a self-describing artifact: its frontmatter records the recipe (which nodes, in what order, at what versions), and its body holds the rendered text. Any completed policy can be Decomposed back to its recipe without consulting external state.
-
-### Required fields
-
-| Field | TOML type | Constraints | Description |
-|---|---|---|---|
-| `kind` | string | must equal `"completed"` | Discriminates this file as a completed policy. |
-| `id` | string | kebab-case, unique across completed policies | The completed policy's stable identifier. |
-| `generated_at` | string | ISO 8601 datetime with timezone | When this completed policy was rendered by Compose. |
-| `render_mode` | string | identifies the renderer used | The renderer that produced the body. v0.1 supports `"markdown-h2"`. Future renderers will add values like `"claude-xml"`, `"plain-text"`. |
-| `nodes` | array of inline tables | each entry has `id` and `version` fields | The ordered recipe. Each entry records one node that was included in this composition, in the order it was rendered. |
-
-### Optional fields
-
-| Field | TOML type | Description |
-|---|---|---|
-| `name` | string | Human-readable display name. |
-| `description` | string | One-line summary of the completed policy's purpose. |
-| `source_library` | string | Path to the library directory used at compose time. Useful for reproduction. |
-| `composer_version` | string | Semver of the Oovra binary that produced this file. Useful for diagnosing renderer changes between versions. |
-| `overrides` | array of inline tables | Records any inline body overrides applied during composition. Each entry has `node_id` (string) and `applied_override` (string). Empty or absent if no overrides were used. |
-| `target_model` | string | Identifies the AI model this prompt was composed for (e.g. `"claude-opus-4-7"`, `"gpt-5"`). Informational only; Oovra does not enforce model-specific constraints. |
-| `notes` | string | Free-form notes. Not consumed by Oovra. |
-
-### The `nodes` array — most important field after `kind`
-
-The `nodes` array is the recipe. Its order matters: it is the order in which nodes were rendered into the body. Decompose reads this array to recover the composition; Re-render uses it to regenerate the body after node changes; Compare uses it to perform structural diffs.
-
-Each entry in the `nodes` array is a TOML inline table with two required fields:
-
-- `id` — the ID of a node that was included.
-- `version` — the version of that node that was resolved at compose time. This records what was actually used, not what was requested.
-
-In TOML syntax, the `nodes` array is written as an array of inline tables:
-
-```toml
-nodes = [
-  { id = "role-declaration", version = "1.0.0" },
-  { id = "refusal-policy-strict", version = "1.2.0" },
-  { id = "output-format-markdown", version = "0.3.1" }
-]
-```
-
-Or, equivalently, as an array of sub-tables:
-
-```toml
-[[nodes]]
-id = "role-declaration"
-version = "1.0.0"
-
-[[nodes]]
+order = 0
 id = "refusal-policy-strict"
-version = "1.2.0"
-
-[[nodes]]
-id = "output-format-markdown"
-version = "0.3.1"
-```
-
-Both forms are valid and parse identically. The inline-table form is more compact for typical use; the sub-table form is more readable for compositions with many nodes or with future per-node metadata. Compose emits the inline-table form by default.
-
-### Body rules for completed policies
-
-The body is the rendered output produced by Oovra's renderer. It is intended to be copied directly into a system prompt field, an API call, or wherever the prompt is actually used.
-
-For `render_mode = "markdown-h2"`, the body consists of each composed node's body wrapped in a Markdown H2 header containing the node's ID, with adjacent nodes separated by a blank line. Future render modes will produce different body structures.
-
-The body should be treated as opaque by humans and agents editing Oovra files. **Do not hand-edit the body of a completed policy.** If the body needs to change, change the underlying node and re-run Compose. Hand-edits to a completed policy's body silently desynchronize it from its recipe; the next Compose run will overwrite them without warning.
-
-If you find yourself wanting to hand-edit a completed policy's body, that's a signal that you should either (a) edit the underlying node and re-render, or (b) use the `overrides` field in the recipe to record an inline override that survives re-rendering.
-
-### Example: a complete completed-policy file
-
-```
-+++
-kind = "completed"
-id = "coding-agent-strict"
-generated_at = "2026-05-06T14:23:15Z"
-render_mode = "markdown-h2"
-name = "Coding Agent (Strict Refusal)"
-description = "Production coding agent prompt with strict refusal policy."
-source_library = "./nodes"
-composer_version = "0.1.0"
-target_model = "claude-opus-4-7"
-nodes = [
-  { id = "role-declaration", version = "1.0.0" },
-  { id = "refusal-policy-strict", version = "1.2.0" },
-  { id = "output-format-markdown", version = "0.3.1" },
-  { id = "tone-direct", version = "1.1.0" }
-]
+version = "1.0.0"
+meta = "..."
 +++
 
-## role-declaration
+(the order-0 body text)
+~~<<
+~~>>
++++
+name = "Tone: Direct"
+order = 0
+id = "tone-direct"
+version = "1.0.0"
+meta = "..."
++++
 
-You are an expert software engineer assisting a developer with code review,
-debugging, and design questions. You answer concisely and ground your
-answers in the specific code at hand.
-
-## refusal-policy-strict
-
-When asked to produce content that would cause concrete harm — including
-weapons synthesis, malware, or content sexualizing minors — decline briefly
-and without lecturing. Do not explain at length why the request is harmful;
-a single clear sentence of decline is enough. Then offer a constructive
-alternative if one exists.
-
-## output-format-markdown
-
-Format responses in Markdown. Use code blocks with language tags for all
-code samples. Use bullet lists only when the content is genuinely a list of
-parallel items.
-
-## tone-direct
-
-Be direct. Skip preamble. Skip apology. State conclusions before reasoning
-unless the reasoning must be understood first to make sense of the
-conclusion.
+(the order-0 body text)
+~~<<
 ```
 
 ---
 
 ## Validation Rules (What the Parser Checks)
 
-Oovra's parser performs the following checks on every file. Authors and agents should ensure their files pass these checks.
-
-### Lexical and structural checks (apply to all kinds)
+### Lexical and structural (all elements)
 
 1. The file begins with `+++` on its own line.
-2. A second `+++` line appears later in the file.
-3. The content between the two `+++` lines is valid TOML.
-4. The frontmatter contains a `kind` field whose value is a string.
-5. The `kind` value is `"node"` or `"completed"`.
-
-### Semantic checks for `kind = "node"`
-
-1. `id` is present, is a string, and is in kebab-case (lowercase letters, digits, and hyphens only).
-2. `version` is present, is a string, and parses as a valid semantic version.
-3. `tags` is present and is an array of strings.
-4. Every optional field, if present, has the type listed in the schema.
+2. A second `+++` line appears later.
+3. The content between is valid TOML.
+4. `name`, `order`, `id`, `version`, `meta` are present with correct types.
 5. The body is non-empty after stripping whitespace.
 
-### Semantic checks for `kind = "completed"`
+### Semantic
 
-1. `id` is present, is a string, and is in kebab-case.
-2. `generated_at` is present, is a string, and parses as a valid ISO 8601 datetime.
-3. `render_mode` is present and is a string.
-4. `nodes` is present, is an array, and each entry is a table containing `id` (string) and `version` (string).
-5. Every optional field, if present, has the type listed in the schema.
-6. The body is non-empty after stripping whitespace.
+1. `id` matches the kebab-case grammar.
+2. `version` parses as semver.
+3. `name` is non-empty.
+4. If `composed_of` is present: `generated_at` (RFC 3339), `render_mode`, and `body_level` are also present; `composed_of` is non-empty; every entry has a kebab-case `id` and a semver `version`.
+5. If `composed_of` is absent: `generated_at`, `render_mode`, and `body_level` must all be absent, AND `order` must be `0`. This rejects hand-authored claims of higher orders without a recipe.
 
-### Library-wide checks (performed when loading a library)
+### Library-wide
 
-1. All node `id` values across the library are unique.
-2. All completed-policy `id` values across the library are unique.
-3. (v0.2) All `requires` references in node frontmatter point to node IDs that exist in the library.
-4. (v0.2) No `conflicts_with` cycle exists.
+1. All `id` values across the library are unique.
 
 ---
 
-## Guidance for Agents Authoring Oovra Files
+## Operators (the Four Verbs)
 
-If you are an AI agent producing Oovra files, follow these rules to maximize the likelihood that your output parses correctly the first time:
+The CLI is `oovra`, with four subcommands:
 
-**Always start with the frontmatter.** Write `+++`, then the TOML, then `+++`, then a blank line, then the body. Do not lead with the body. Do not put commentary before the opening delimiter.
+- **`oovra create`** — author a new order-0 element (`--new`) or label an existing `.md` file (`--label`). Always produces order 0.
+- **`oovra compose`** — combine ordered inputs into a higher-order element. Computes the output order. Three modes: writes a file (default), prints body text (`--text`), or regenerates the body of an existing composed file (`--re-render <path>`).
+- **`oovra decompose`** — split a composed element. Default returns the immediate inputs (one level down). `--full` recursively writes a folder tree all the way to order-0 leaves.
+- **`oovra compare`** — diff two prompt elements. Same-order-0 → content diff. Same-order-≥1 → structural diff over `composed_of` (added / removed / version-changed inputs). Different orders → refused.
 
-**Always include the required fields for the kind you're authoring.** For nodes, that means `kind`, `id`, `version`, and `tags` — even if `tags` is an empty array (`tags = []`). For completed policies, that means `kind`, `id`, `generated_at`, `render_mode`, and `nodes`. Missing required fields are the most common cause of parse failures.
-
-**Quote all string values.** TOML technically allows bare strings in some contexts, but always quoting strings eliminates an entire class of edge cases (such as values that look like booleans or numbers).
-
-**Use kebab-case for all IDs.** Lowercase letters, digits, and hyphens. No spaces, no underscores, no uppercase. The parser will reject IDs that don't match this convention.
-
-**Use semver for all version strings.** Three numeric components separated by dots, optionally followed by a pre-release suffix. Examples: `"1.0.0"`, `"2.3.1"`, `"0.1.0-alpha1"`. The string `"v1.0"` is **not** valid semver and will be rejected.
-
-**For `generated_at`, use ISO 8601 with timezone.** Example: `"2026-05-06T14:23:15Z"`. The `Z` suffix indicates UTC. Local-time strings without a timezone are rejected.
-
-**If you are authoring a node, write a body that is internally consistent and portable.** A node body should make sense when included in any composition. Avoid phrases like "as I said above" or "the next section" — those break when the node is composed in a different position.
-
-**If you are producing a completed policy, only do so via Oovra's Compose operator.** Hand-authored completed policies are technically valid if they pass schema validation, but they bypass the recipe-tracking machinery and break the Decompose round-trip. If you need to assemble a prompt programmatically, call `oovra compose`; do not synthesize the file directly.
-
-**When in doubt, run `oovra compose --text <node-id>` on a node you just authored.** This is the staged-form inspection pattern: Compose loads the node, validates it, and renders just its body to stdout — without writing anything to disk. If the node parses, you'll see the body. If it doesn't, you'll see a clear error message identifying what's wrong. This is Oovra's built-in validation path; there is no separate `oovra inspect` command because there doesn't need to be one. Use this as your validator before declaring a task complete.
+Validation is internal to every operator. There is no separate `validate` or `inspect` command — running `oovra compose --text <id>` on a single element loads it, validates it, and prints the body without writing anything. That is the staged-form inspection path.
 
 ---
 
-## Versioning of This Schema
+## Guidance for Agents
 
-This document describes Oovra schema version `0.1`. Future schema versions will preserve backward compatibility where possible:
+If you are an LLM authoring Oovra files, follow these rules to maximize first-shot correctness:
 
-- New optional fields may be added at any time.
-- New `kind` values may be added (the planned `"bundle"` kind is the next one).
-- New required fields will only be added in major schema-version bumps and will be accompanied by migration guidance.
-- Existing field types will not change.
-- Existing field semantics will not change.
-
-The schema version is **not** recorded in individual Oovra files in v0.1 because there is only one version. When v0.2 ships, a `schema_version` field will be added to the optional fields list, and files without it will be assumed to follow v0.1 rules.
+- **Always include all five required fields** (`name`, `order`, `id`, `version`, `meta`). `meta = ""` is fine; missing `meta` is a parse error.
+- **Hand-authored files are always `order = 0`.** Do not write higher-order files by hand. Use `oovra compose`.
+- **Quote all string values.** TOML allows bare strings in some contexts but always quoting eliminates a class of edge cases.
+- **Use kebab-case for all IDs.** Lowercase letters, digits, hyphens; no leading/trailing/double hyphens.
+- **Use semver for all versions.** `"1.0.0"`, not `"v1.0"` or `"1.0"`.
+- **Write portable bodies.** Order-0 bodies should make sense in any composition. Avoid "as I said above" / "the next section" — those break when the element is composed in a different position.
+- **When in doubt, run `oovra compose --text <id>`** on the element you just authored. If it parses, you'll see the body. If not, you'll see a clear error.
 
 ---
 
 ## Quick Reference Card
 
-```
+```toml
 +++
-kind = "node" | "completed"
+name = "Human-Readable Name"
+order = 0
 id = "kebab-case-id"
-version = "semver"               # nodes only
-generated_at = "ISO 8601"        # completed only
-render_mode = "markdown-h2"      # completed only
-nodes = [ {id=..., version=...} ] # completed only
-tags = []                        # nodes only, may be empty
-# ... optional fields ...
+version = "1.0.0"
+meta = "optional description; may be empty string"
+# When the element has a recipe, the following are also required:
+# generated_at = "RFC 3339"
+# render_mode = "markdown-h2"
+# body_level = 1                # = max(input.order) + 1
+# composed_of = [{ id = "...", version = "..." }, ...]
 +++
 
-(body — freeform Markdown for nodes;
- renderer output for completed policies)
+(body — freeform Markdown for atomic order-0 elements;
+ wrapped sub-element files for composed elements)
 ```
 
-If you remember nothing else, remember:
+If you remember nothing else:
 
 - `+++` not `---`
-- `kind` decides everything
+- `order` decides everything; `order = 0` for hand-authored
 - IDs are kebab-case
 - Versions are semver
-- Run `oovra compose --text <node-id>` to verify
+- Run `oovra compose --text <id>` to verify

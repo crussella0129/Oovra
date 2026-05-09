@@ -1,0 +1,180 @@
+//! The TOML frontmatter schema for every Oovra prompt element.
+//!
+//! Every Oovra file has the same shape — there is no `kind` discriminator.
+//! Instead, a numeric `order` field tells you what kind of element this is:
+//!
+//! - `order = 0` is an atomic, hand-authored element (a sentence or paragraph
+//!   that is internally consistent on its own).
+//! - `order = 1` is a composition of order-0 elements (formerly "completed
+//!   policy").
+//! - `order = N` is a composition where at least two inputs were themselves
+//!   order `N-1` — see [`compute_order`](crate::render::compute_order) for
+//!   the rule.
+//!
+//! Required fields for ALL elements:
+//! - `name`, `order`, `id`, `version`, `meta` (may be empty string)
+//!
+//! Required when `order >= 1`:
+//! - `generated_at` (RFC 3339 timestamp), `render_mode` (e.g. "markdown-h2"),
+//!   `composed_of` (array of immediate-input id+version records).
+
+use serde::{Deserialize, Serialize};
+
+/// One immediate input to a composed element. Recorded in the `composed_of`
+/// array of order >= 1 elements.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputRef {
+    pub id: String,
+    pub version: String,
+}
+
+impl InputRef {
+    pub fn new(id: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            version: version.into(),
+        }
+    }
+}
+
+/// The full TOML frontmatter of a prompt element. One struct for all kinds of
+/// element; fields that are only meaningful for composed elements are
+/// `Option<T>` and validated jointly.
+///
+/// Two distinct concepts that must not be conflated:
+///
+/// - `order` is the **logical compositional depth** computed by the user's
+///   formula in [`crate::render::compute_order`]: only climbs when at least
+///   two inputs are peers at the highest input order.
+/// - `body_level` is the **physical delimiter level** used inside the body —
+///   always `max(input.order) + 1` at compose time. This satisfies the
+///   strict-monotonicity escalation rule the body parser depends on, even
+///   when the logical order does not climb. The two values coincide in the
+///   common homogeneous case but diverge for mixed-order compositions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptElementHeader {
+    pub name: String,
+    pub order: u32,
+    pub id: String,
+    pub version: String,
+    /// Free-form description; may be empty string.
+    #[serde(default)]
+    pub meta: String,
+
+    /// RFC 3339 timestamp of composition. Required when `composed_of` is
+    /// present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_at: Option<String>,
+
+    /// Renderer identifier. Required when `composed_of` is present. v0.1
+    /// supports `"markdown-h2"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_mode: Option<String>,
+
+    /// Physical body delimiter level: the number of tildes minus one, used
+    /// in the body's open/close delimiters. Required when `composed_of` is
+    /// present; forbidden otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_level: Option<u32>,
+
+    /// The immediate inputs (one level down) that produced this element.
+    /// Required for any composed element; absent for hand-authored atomics.
+    /// Recursion is recorded in the body, not here — see [`crate::element`]
+    /// for the body delimiter scheme.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composed_of: Option<Vec<InputRef>>,
+}
+
+impl PromptElementHeader {
+    /// True if this element has no recipe (i.e. was hand-authored and has no
+    /// embedded sub-elements).
+    pub fn is_atomic(&self) -> bool {
+        self.composed_of.is_none()
+    }
+
+    /// True if this element has a recipe (i.e. was produced by Compose).
+    pub fn is_composed(&self) -> bool {
+        self.composed_of.is_some()
+    }
+}
+
+/// Validate kebab-case: lowercase letters, digits, and hyphens only;
+/// no leading/trailing hyphen; no double-hyphen.
+pub fn is_kebab_case(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    if s.starts_with('-') || s.ends_with('-') {
+        return false;
+    }
+    if s.contains("--") {
+        return false;
+    }
+    s.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Validate semver per the `semver` crate.
+pub fn is_valid_semver(s: &str) -> bool {
+    semver::Version::parse(s).is_ok()
+}
+
+/// Validate RFC 3339 timestamp (a strict subset of ISO 8601 sufficient for
+/// timestamps with timezone).
+pub fn is_valid_rfc3339(s: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(s).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kebab_case_accepts_valid_ids() {
+        assert!(is_kebab_case("role-declaration"));
+        assert!(is_kebab_case("a"));
+        assert!(is_kebab_case("a-b-c"));
+        assert!(is_kebab_case("v2-beta"));
+        assert!(is_kebab_case("policy-007"));
+    }
+
+    #[test]
+    fn kebab_case_rejects_invalid_ids() {
+        assert!(!is_kebab_case(""));
+        assert!(!is_kebab_case("Role"));
+        assert!(!is_kebab_case("role_declaration"));
+        assert!(!is_kebab_case("role declaration"));
+        assert!(!is_kebab_case("-leading"));
+        assert!(!is_kebab_case("trailing-"));
+        assert!(!is_kebab_case("double--dash"));
+    }
+
+    #[test]
+    fn semver_accepts_valid_versions() {
+        assert!(is_valid_semver("1.0.0"));
+        assert!(is_valid_semver("0.1.0"));
+        assert!(is_valid_semver("2.3.1-rc1"));
+    }
+
+    #[test]
+    fn semver_rejects_invalid_versions() {
+        assert!(!is_valid_semver("v1.0"));
+        assert!(!is_valid_semver("1.0"));
+        assert!(!is_valid_semver(""));
+        assert!(!is_valid_semver("1"));
+    }
+
+    #[test]
+    fn rfc3339_accepts_valid_timestamps() {
+        assert!(is_valid_rfc3339("2026-05-09T14:23:15Z"));
+        assert!(is_valid_rfc3339("2026-05-09T14:23:15+00:00"));
+        assert!(is_valid_rfc3339("2026-05-09T14:23:15.123Z"));
+    }
+
+    #[test]
+    fn rfc3339_rejects_invalid_timestamps() {
+        assert!(!is_valid_rfc3339("2026-05-09"));
+        assert!(!is_valid_rfc3339("2026-05-09 14:23:15"));
+        assert!(!is_valid_rfc3339(""));
+    }
+}

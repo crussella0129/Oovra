@@ -1,0 +1,213 @@
+//! Decompose: the SPLIT operator.
+//!
+//! Two modes:
+//!
+//! 1. **One-level** — split the body of an order-N element into its K
+//!    immediate sub-elements (each itself a complete Oovra file). Returns
+//!    the parsed sub-elements without writing anything to disk.
+//!
+//! 2. **Full** — recursively decompose all the way to order-0 leaves and
+//!    write the result to disk as a folder tree mirroring the order
+//!    hierarchy:
+//!
+//!    ```text
+//!    out/<element-id>/
+//!      <element-id>.md          # the element itself
+//!      <input-1>/               # subdirectory for an order >= 1 input
+//!        <input-1>.md
+//!        <leaf-a>.md            # an order-0 leaf
+//!        <leaf-b>.md
+//!      <leaf-x>.md              # a top-level order-0 input (no subdir)
+//!    ```
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use crate::element::{
+    body_delimiter_close, body_delimiter_open, parse, serialize, PromptElement,
+};
+use crate::error::{OovraError, Result};
+
+/// Split the body of a composed element into its K immediate sub-elements
+/// by scanning for level-`body_level` open/close delimiters (taken from the
+/// element's header). Each chunk between matched delimiters is parsed as a
+/// full Oovra file.
+pub fn decompose(element: &PromptElement) -> Result<Vec<PromptElement>> {
+    if element.header.is_atomic() {
+        return Err(OovraError::CannotDecomposeAtomic {
+            id: element.header.id.clone(),
+        });
+    }
+
+    let body_level = element.header.body_level.ok_or_else(|| {
+        OovraError::OrderRequiresField {
+            id: element.header.id.clone(),
+            order: element.header.order,
+            field: "body_level",
+        }
+    })?;
+
+    let open = body_delimiter_open(body_level);
+    let close = body_delimiter_close(body_level);
+
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current: Option<Vec<&str>> = None;
+
+    for line in element.body.lines() {
+        let trimmed = line.trim_end();
+        if trimmed == open {
+            if current.is_some() {
+                return Err(OovraError::BodyParse {
+                    id: element.header.id.clone(),
+                    order: element.header.order,
+                    reason: format!(
+                        "encountered '{open}' while still inside an open chunk"
+                    ),
+                });
+            }
+            current = Some(Vec::new());
+        } else if trimmed == close {
+            match current.take() {
+                Some(buf) => chunks.push(buf.join("\n")),
+                None => {
+                    return Err(OovraError::BodyParse {
+                        id: element.header.id.clone(),
+                        order: element.header.order,
+                        reason: format!(
+                            "encountered '{close}' without a matching '{open}'"
+                        ),
+                    });
+                }
+            }
+        } else if let Some(buf) = current.as_mut() {
+            buf.push(line);
+        }
+    }
+
+    if current.is_some() {
+        return Err(OovraError::BodyParse {
+            id: element.header.id.clone(),
+            order: element.header.order,
+            reason: format!("missing '{close}' to close the final chunk"),
+        });
+    }
+
+    if chunks.is_empty() {
+        return Err(OovraError::BodyParse {
+            id: element.header.id.clone(),
+            order: element.header.order,
+            reason: format!("no '{open}' delimiters found in body"),
+        });
+    }
+
+    // Parse each chunk as a complete Oovra file.
+    let mut parsed: Vec<PromptElement> = Vec::with_capacity(chunks.len());
+    let synthetic = PathBuf::from(format!("<{}:embedded>", element.header.id));
+    for chunk in &chunks {
+        parsed.push(parse(chunk, &synthetic)?);
+    }
+    Ok(parsed)
+}
+
+/// Recursively decompose `element` to order-0 leaves and write the result
+/// as a folder tree under `out_root / <element.id>`.
+///
+/// Returns the path to the root directory of the decomposed tree.
+pub fn decompose_full(element: &PromptElement, out_root: &Path) -> Result<PathBuf> {
+    let element_dir = out_root.join(&element.header.id);
+    fs::create_dir_all(&element_dir).map_err(|source| OovraError::WriteIo {
+        path: element_dir.clone(),
+        source,
+    })?;
+
+    write_recursive(element, &element_dir)?;
+
+    Ok(element_dir)
+}
+
+/// Helper: write `element` as `dir/<id>.md`, then for each immediate input,
+/// either write it directly (order-0 leaf) or recurse into a subdirectory
+/// (order >= 1 sub-composition).
+fn write_recursive(element: &PromptElement, dir: &Path) -> Result<()> {
+    // Write this element's file to dir/<id>.md.
+    let element_path = dir.join(format!("{}.md", element.header.id));
+    let content = serialize(element)?;
+    fs::write(&element_path, content).map_err(|source| OovraError::WriteIo {
+        path: element_path.clone(),
+        source,
+    })?;
+
+    if element.header.is_atomic() {
+        return Ok(());
+    }
+
+    // For each immediate input, decompose one level and recurse.
+    let immediate_inputs = decompose(element)?;
+    for input in immediate_inputs {
+        if input.header.is_atomic() {
+            // Order-0 leaf: write it directly into the current directory.
+            let path = dir.join(format!("{}.md", input.header.id));
+            let content = serialize(&input)?;
+            fs::write(&path, content).map_err(|source| OovraError::WriteIo {
+                path: path.clone(),
+                source,
+            })?;
+        } else {
+            // Order >= 1 sub-composition: create a subdirectory and recurse.
+            let sub_dir = dir.join(&input.header.id);
+            fs::create_dir_all(&sub_dir).map_err(|source| OovraError::WriteIo {
+                path: sub_dir.clone(),
+                source,
+            })?;
+            write_recursive(&input, &sub_dir)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Produce a human-readable report listing the immediate inputs of a
+/// composed element (id, version, order). For the `decompose` command's
+/// no-write inspection mode.
+pub fn report(element: &PromptElement) -> Result<DecomposeReport> {
+    if element.header.is_atomic() {
+        return Err(OovraError::CannotDecomposeAtomic {
+            id: element.header.id.clone(),
+        });
+    }
+    let immediate = decompose(element)?;
+    let entries = immediate
+        .iter()
+        .map(|e| ReportEntry {
+            id: e.header.id.clone(),
+            version: e.header.version.clone(),
+            order: e.header.order,
+            name: e.header.name.clone(),
+        })
+        .collect();
+
+    Ok(DecomposeReport {
+        element_id: element.header.id.clone(),
+        element_order: element.header.order,
+        element_version: element.header.version.clone(),
+        render_mode: element.header.render_mode.clone(),
+        inputs: entries,
+    })
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct DecomposeReport {
+    pub element_id: String,
+    pub element_order: u32,
+    pub element_version: String,
+    pub render_mode: Option<String>,
+    pub inputs: Vec<ReportEntry>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ReportEntry {
+    pub id: String,
+    pub version: String,
+    pub order: u32,
+    pub name: String,
+}

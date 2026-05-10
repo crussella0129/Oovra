@@ -22,6 +22,8 @@ git clone https://github.com/crussella0129/oovra.git
 cd oovra
 cargo build --release
 # binary at target/release/oovra(.exe)
+cargo install --path
+# installs oovra directly to PATH, allowing for 'oovra' commands natively from the terminal
 ```
 
 ## Quick tour

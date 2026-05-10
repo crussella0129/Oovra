@@ -17,13 +17,38 @@ Every composed element is **self-describing and losslessly decomposable**: the b
 
 ## Install / build
 
+The build works identically on Windows, Linux, and macOS — same commands, same result. You need the [Rust toolchain](https://rustup.rs/) and a C linker.
+
+### Prerequisites
+
+| Platform | C linker setup |
+|---|---|
+| **Windows** | rustup installs the MSVC linker automatically when prompted; otherwise install [Build Tools for Visual Studio](https://visualstudio.microsoft.com/downloads/?q=build+tools) |
+| **Linux** (Debian/Ubuntu/WSL) | `sudo apt install build-essential pkg-config` |
+| **Linux** (Fedora/RHEL) | `sudo dnf groupinstall "Development Tools"` |
+| **Linux** (Arch) | `sudo pacman -S base-devel` |
+| **macOS** | `xcode-select --install` |
+
+### Install globally (recommended)
+
 ```bash
 git clone https://github.com/crussella0129/oovra.git
 cd oovra
+cargo install --path .
+# compiles in release mode and copies the binary to ~/.cargo/bin/oovra(.exe),
+# which rustup put on your PATH — invoke `oovra` from any directory afterward
+```
+
+If `oovra` isn't found right after install, your PATH may need refreshing — open a new terminal, or on Linux/macOS run `source ~/.cargo/env`.
+
+### Local build alternative
+
+If you don't want a global install, build into the project's `target/` directory and run from there:
+
+```bash
 cargo build --release
-# binary at target/release/oovra(.exe)
-cargo install --path
-# installs oovra directly to PATH, allowing for 'oovra' commands natively from the terminal
+./target/release/oovra --version        # Linux / macOS / WSL / git-bash
+.\target\release\oovra.exe --version    # Windows PowerShell or cmd
 ```
 
 ## Quick tour

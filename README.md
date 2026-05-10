@@ -109,9 +109,15 @@ The body delimiter for a level-`N` composed element is `(N+1)`-tildes + `>>` to 
 
 See [SCHEMA.md](./SCHEMA.md) for the full schema.
 
-## Examples
+## Documentation
 
-[`oovra-by-example/`](./oovra-by-example/) is a curated suite of five end-to-end demos showing the tool in action. Each demo has a `notes.md` (what's being demonstrated and why it matters architecturally) and a `results.md` (captured outputs and verdicts) — together they cover lossless decomposition, the prose-form renderer, deep recursive flattening, structural diff, and the mixed-order delimiter-escalation case. Browse [`oovra-by-example/README.md`](./oovra-by-example/README.md) for the index.
+The full user-facing documentation lives at [`Documentation/`](./Documentation/). Start at [`Documentation/README.md`](./Documentation/README.md) for the navigation hub. Highlights:
+
+- **[`Documentation/reference/`](./Documentation/reference/)** — feature-by-feature specifications: every command, every flag, every error variant, every schema field.
+- **[`Documentation/demos/`](./Documentation/demos/)** — five end-to-end demos with captured outputs and verdicts (lossless round-trip, prose rendering, deep flattening, structural diff, mixed-order regression).
+- **[`Documentation/build-guide.md`](./Documentation/build-guide.md)** — the from-first-principles construction guide for anyone reimplementing this from scratch.
+
+The terse machine-facing schema contract is at [`SCHEMA.md`](./SCHEMA.md).
 
 ## Why TOML, not YAML or JSON
 
@@ -129,7 +135,7 @@ Every Oovra file is a valid Markdown file, so the entire library is also a valid
 
 ## Status
 
-v0.1 — working. 32 tests passing (21 unit + 11 integration), including regression tests for the mixed-order body-delimiter collision case and the create-with-invalid-id orphan-file case. See [`oovra-build-guide.md`](./oovra-build-guide.md) for the from-first-principles step-by-step build guide derived from this codebase.
+v0.1 — working. 32 tests passing (21 unit + 11 integration), including regression tests for the mixed-order body-delimiter collision case and the create-with-invalid-id orphan-file case. See [`Documentation/build-guide.md`](./Documentation/build-guide.md) for the from-first-principles step-by-step build guide derived from this codebase.
 
 ## License
 

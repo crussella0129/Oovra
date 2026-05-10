@@ -1043,7 +1043,11 @@ oovra/
 ├── Cargo.toml
 ├── README.md
 ├── SCHEMA.md
-├── oovra-build-guide.md   # this file
+├── Documentation/
+│   ├── README.md
+│   ├── reference/         # feature-by-feature reference docs
+│   ├── demos/             # end-to-end demonstrations
+│   └── build-guide.md     # this file
 ├── src/
 │   ├── lib.rs             # public re-exports
 │   ├── main.rs            # CLI entry point

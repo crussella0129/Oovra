@@ -47,4 +47,5 @@ This means a successful demo run is **dated evidence** — see the timestamps in
 ## See also
 
 - [../reference/](../reference/) — feature-by-feature reference docs (what each command does, what each error means)
-- [../README.md](../README.md) — the top-level oovra-by-example navigation
+- [../README.md](../README.md) — the top-level Documentation navigation
+- [../build-guide.md](../build-guide.md) — the from-first-principles construction guide

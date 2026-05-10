@@ -2,7 +2,7 @@
 
 The complete feature reference for Oovra v0.1. Each document is a stand-alone reference for one aspect of the system, with explicit specifications, every flag, every constraint, every error variant, and worked examples.
 
-If you're new to Oovra, start at the parent [oovra-by-example/README.md](../README.md) and walk through the [demos](../demos/) first — they give you a concrete tour. This reference is for when you need to look something up: "what does this flag do," "what error can fire here," "what's the formula for `body_level`."
+If you're new to Oovra, start at the parent [Documentation/README.md](../README.md) and walk through the [demos](../demos/) first — they give you a concrete tour. This reference is for when you need to look something up: "what does this flag do," "what error can fire here," "what's the formula for `body_level`."
 
 ## Reading order
 
@@ -42,10 +42,10 @@ For first-time readers wanting a top-to-bottom tour of the reference:
 
 This reference is for **Oovra v0.1**. The schema is committed to backward compatibility within the v0.1 line — new optional fields may be added, but existing field types and semantics will not change.
 
-When v0.2 ships (with planned additions like Claude-XML render modes, semver range matching on version pins, the `bundle` kind, etc.), this reference will be updated as a snapshot for that version. Look at the git history of `oovra-by-example/reference/` to see how the docs have changed across versions.
+When v0.2 ships (with planned additions like Claude-XML render modes, semver range matching on version pins, the `bundle` kind, etc.), this reference will be updated as a snapshot for that version. Look at the git history of `Documentation/reference/` to see how the docs have changed across versions.
 
 ## See also
 
 - [../demos/](../demos/) — end-to-end demonstrations of each property in action
-- [../../SCHEMA.md](../../SCHEMA.md) — the canonical agent-facing schema contract (terser than this reference; written for LLM consumption)
-- [../../oovra-build-guide.md](../../oovra-build-guide.md) — the from-first-principles construction guide for builders reimplementing this from scratch
+- [../build-guide.md](../build-guide.md) — the from-first-principles construction guide for builders reimplementing this from scratch
+- [../../SCHEMA.md](../../SCHEMA.md) — the canonical agent-facing schema contract at repo root (terser than this reference; written for LLM consumption)

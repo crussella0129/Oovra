@@ -6,7 +6,7 @@ The rest of `Documentation/` (the `reference/`, `demos/`, `build-guide.md`) is v
 
 ## Contents
 
-- [`version reports/`](./version%20reports/) — three planning/assessment reports written during v0.1: v0.2 scoping, oovra-server feasibility, and an efficacy rating of v0.1 itself.
+- [`version-reports/`](./version-reports/) — three planning/assessment reports written during v0.1: v0.2 scoping, oovra-server feasibility, and an efficacy rating of v0.1 itself.
 
 ## When v0.2 ships
 

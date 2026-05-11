@@ -1101,7 +1101,9 @@ oovra/
 │   ├── README.md
 │   ├── reference/         # feature-by-feature reference docs
 │   ├── demos/             # end-to-end demonstrations
-│   └── build-guide.md     # this file
+│   ├── build-guide.md     # this file
+│   └── v0.1/              # version-specific planning artifacts
+│       └── version-reports/  # v0.2 scoping, server feasibility, v0.1 efficacy
 ├── src/
 │   ├── lib.rs             # public re-exports
 │   ├── main.rs            # CLI entry point

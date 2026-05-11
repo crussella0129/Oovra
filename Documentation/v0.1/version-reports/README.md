@@ -12,7 +12,7 @@ Three planning/assessment reports written while v0.1 was the current state. Toge
 
 These are **v0.1-era planning documents**. They were captured while v0.1 was the current shipping state — before any v0.2 code was written. The numeric ratings, scope estimates, and community-fit assessments reflect what was knowable at that moment.
 
-When v0.2 ships, this folder should be left in place as a historical record. A fresh `v0.2/version reports/` folder can be created for the next planning cycle.
+When v0.2 ships, this folder should be left in place as a historical record. A fresh `v0.2/version-reports/` folder can be created for the next planning cycle.
 
 ## Reading order
 

@@ -19,7 +19,7 @@ use crate::element::{
     body_delimiter_close, body_delimiter_open, serialize, PromptElement,
 };
 use crate::error::{OovraError, Result};
-use crate::header::{InputRef, PromptElementHeader};
+use crate::header::{InputRef, PromptElementHeader, PromptElementKind};
 use crate::library::Library;
 
 /// Inputs to a Compose operation.
@@ -144,6 +144,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<PromptElement> {
 
     let header = PromptElementHeader {
         name: req.output_name,
+        kind: PromptElementKind::Compound,
         order: output_order,
         id: req.output_id,
         version: req.output_version,
@@ -151,6 +152,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<PromptElement> {
         generated_at: Some(Utc::now().to_rfc3339()),
         render_mode: Some("markdown-h2".to_string()),
         body_level: Some(body_level),
+        depth: None,
         composed_of: Some(input_refs),
     };
 

@@ -5,6 +5,12 @@
 //! Create, Compose, Decompose, Compare — for use by the `oovra` binary or
 //! any other Rust consumer.
 
+// `OovraError::InvalidToml` wraps `toml::de::Error` which is ~128 bytes, making
+// the enum large. Boxing the source on every error path is a runtime cost paid
+// for a stack-size lint with no real consequence in this codebase. Suppressed
+// at the crate root; revisit if/when the error type grows or is benchmarked.
+#![allow(clippy::result_large_err)]
+
 pub mod create;
 pub mod decompose;
 pub mod diff;

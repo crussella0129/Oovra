@@ -20,6 +20,22 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The two kinds of prompt element. An **atom** is hand-authored and
+/// indivisible; a **compound** is produced by `oovra compose` and carries a
+/// `composed_of` recipe.
+///
+/// v0.2 introduces this as the canonical kind discriminator, replacing the
+/// numeric `order` field. In v0.2's commit-2 transition state the enum exists
+/// alongside `order`; commit 3 removes `order` and makes `kind` the sole
+/// discriminator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PromptElementKind {
+    #[default]
+    Atom,
+    Compound,
+}
+
 /// One immediate input to a composed element. Recorded in the `composed_of`
 /// array of order >= 1 elements.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +70,12 @@ impl InputRef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptElementHeader {
     pub name: String,
+    /// The kind of element. v0.2 introduces this as the canonical discriminator
+    /// (`"atom"` for hand-authored, `"compound"` for composed). v0.1 files
+    /// without this field deserialize as `Atom` via `Default`. In commit 3 the
+    /// `#[serde(default)]` is dropped and missing `kind` becomes a hard error.
+    #[serde(default)]
+    pub kind: PromptElementKind,
     pub order: u32,
     pub id: String,
     pub version: String,
@@ -76,6 +98,12 @@ pub struct PromptElementHeader {
     /// present; forbidden otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_level: Option<u32>,
+
+    /// Compositional depth of the recipe tree: 0 for atoms, `1 + max(child.depth)`
+    /// for compounds. Optional, derived. Compose writes it in v0.2 commit 4;
+    /// the validator checks the per-file constraint `depth >= 1` when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<u32>,
 
     /// The immediate inputs (one level down) that produced this element.
     /// Required for any composed element; absent for hand-authored atomics.

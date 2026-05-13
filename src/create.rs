@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::element::{looks_like_oovra_file, write, PromptElement};
 use crate::error::{OovraError, Result};
-use crate::header::PromptElementHeader;
+use crate::header::{PromptElementHeader, PromptElementKind};
 
 pub struct ScaffoldArgs {
     pub library_dir: PathBuf,
@@ -29,6 +29,7 @@ pub fn scaffold(args: ScaffoldArgs) -> Result<PathBuf> {
 
     let header = PromptElementHeader {
         name: args.name.unwrap_or_else(|| args.id.clone()),
+        kind: PromptElementKind::Atom,
         order: 0,
         id: args.id.clone(),
         version: args.version,
@@ -36,6 +37,7 @@ pub fn scaffold(args: ScaffoldArgs) -> Result<PathBuf> {
         generated_at: None,
         render_mode: None,
         body_level: None,
+        depth: None,
         composed_of: None,
     };
 
@@ -92,6 +94,7 @@ pub fn label(args: LabelArgs) -> Result<PathBuf> {
 
     let header = PromptElementHeader {
         name: args.name.unwrap_or_else(|| args.id.clone()),
+        kind: PromptElementKind::Atom,
         order: 0,
         id: args.id.clone(),
         version: args.version,
@@ -99,6 +102,7 @@ pub fn label(args: LabelArgs) -> Result<PathBuf> {
         generated_at: None,
         render_mode: None,
         body_level: None,
+        depth: None,
         composed_of: None,
     };
 

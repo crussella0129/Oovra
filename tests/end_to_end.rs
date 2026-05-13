@@ -440,6 +440,53 @@ fn mixed_kind_compose_does_not_collide_with_inner_delimiters() {
 }
 
 #[test]
+fn depth_equals_body_level_for_every_compose() {
+    // SPEC §7.2: for any compose call, the output's depth field equals its
+    // body_level. (The SPEC's claim that depth = body_level - 1 contradicts
+    // its own §1.3 formula; we follow §1.3.)
+    let library = Library::load(elements_dir()).unwrap();
+
+    // Atoms-only compound: both should be 1.
+    let c1 = compose(ComposeRequest {
+        library: &library,
+        inputs: vec![
+            ("role-declaration".into(), None),
+            ("tone-direct".into(), None),
+        ],
+        output_id: "depth-check-1".into(),
+        output_name: "depth-check-1".into(),
+        output_version: "1.0.0".into(),
+        output_meta: String::new(),
+    })
+    .unwrap();
+    assert_eq!(c1.header.body_level, Some(1));
+    assert_eq!(c1.header.depth, Some(1));
+
+    // Compound-of-compound: both should be 2.
+    let tmp = tempdir_for_test("depth-staging");
+    for entry in std::fs::read_dir(elements_dir()).unwrap() {
+        let p = entry.unwrap().path();
+        std::fs::copy(&p, tmp.join(p.file_name().unwrap())).unwrap();
+    }
+    write(&c1, &tmp.join("depth-check-1.md")).unwrap();
+    let staged = Library::load(&tmp).unwrap();
+    let c2 = compose(ComposeRequest {
+        library: &staged,
+        inputs: vec![
+            ("depth-check-1".into(), None),
+            ("examples-block".into(), None),
+        ],
+        output_id: "depth-check-2".into(),
+        output_name: "depth-check-2".into(),
+        output_version: "1.0.0".into(),
+        output_meta: String::new(),
+    })
+    .unwrap();
+    assert_eq!(c2.header.body_level, Some(2));
+    assert_eq!(c2.header.depth, Some(2));
+}
+
+#[test]
 fn compare_refuses_atom_vs_compound() {
     let library = Library::load(elements_dir()).unwrap();
     let compound = compose(ComposeRequest {

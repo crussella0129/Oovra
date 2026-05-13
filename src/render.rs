@@ -43,6 +43,23 @@ pub fn compute_body_level(input_body_levels: &[u32]) -> u32 {
     input_body_levels.iter().copied().max().map(|m| m + 1).unwrap_or(1)
 }
 
+/// Compute the **recipe depth** of a Compose output from the depths of its
+/// inputs.
+///
+/// Atoms contribute `depth = 0` by convention; compounds contribute their
+/// stored `depth`. The output is `1 + max(child.depth, default = 0)`, mirroring
+/// [`compute_body_level`].
+///
+/// Numerically, `depth` and `body_level` coincide for every valid compound —
+/// each output increments by one from the max input value, and atoms
+/// contribute 0 to both. The two fields exist for different audiences:
+/// `body_level` is what the body parser scans tildes for; `depth` is a
+/// human-readable "how deeply composed is this?" metric exposed for library
+/// filtering and tooling.
+pub fn compute_depth(input_depths: &[u32]) -> u32 {
+    input_depths.iter().copied().max().map(|m| m + 1).unwrap_or(1)
+}
+
 /// Wrap one input's full file content in level-`body_level` open/close
 /// delimiters. Each delimiter sits on its own line.
 fn wrap_chunk(body_level: u32, full_file_content: &str) -> String {
@@ -101,6 +118,15 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<PromptElement> {
         .collect();
     let body_level = compute_body_level(&input_body_levels);
 
+    // Compute the recipe depth in parallel. Atoms contribute 0; compounds
+    // contribute their stored depth (or fall back to body_level on legacy
+    // compounds that pre-date the depth field — they're guaranteed equal).
+    let input_depths: Vec<u32> = resolved
+        .iter()
+        .map(|e| e.header.depth.or(e.header.body_level).unwrap_or(0))
+        .collect();
+    let depth = compute_depth(&input_depths);
+
     // Render each input as a complete file string (frontmatter + body),
     // wrap each in level-`body_level` delimiters, and concatenate.
     let mut input_files: Vec<String> = Vec::with_capacity(resolved.len());
@@ -118,7 +144,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<PromptElement> {
         generated_at: Some(Utc::now().to_rfc3339()),
         render_mode: Some("markdown-h2".to_string()),
         body_level: Some(body_level),
-        depth: None,
+        depth: Some(depth),
         composed_of: Some(input_refs),
     };
 
@@ -187,5 +213,28 @@ mod tests {
         assert_eq!(compute_body_level(&[2, 2, 1]), 3);
         assert_eq!(compute_body_level(&[5]), 6);
         assert_eq!(compute_body_level(&[]), 1);
+    }
+
+    #[test]
+    fn compute_depth_mirrors_compute_body_level() {
+        // SPEC §1.3: depth = 1 + max(child.depth, atoms=0). Numerically
+        // identical to compute_body_level — the two fields exist for
+        // different audiences (parser vs. humans/tools) but always agree.
+        for inputs in [
+            &[0u32, 0, 0][..],
+            &[1, 1][..],
+            &[1, 0, 0, 0][..],
+            &[2, 1, 0, 0, 0][..],
+            &[2, 2, 1][..],
+            &[5][..],
+            &[][..],
+        ] {
+            assert_eq!(
+                compute_depth(inputs),
+                compute_body_level(inputs),
+                "depth and body_level diverged on input {:?}",
+                inputs
+            );
+        }
     }
 }

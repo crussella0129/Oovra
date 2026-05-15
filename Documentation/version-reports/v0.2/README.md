@@ -9,7 +9,7 @@ The rest of `Documentation/` (`reference/`, `demos/`, `build-guide.md`) is versi
 | File | Purpose |
 |---|---|
 | [`crates-io-publication-plan.md`](./crates-io-publication-plan.md) | Readiness audit + step-by-step plan for publishing v0.2 to crates.io. Captured but not yet executed. |
-| [`v0.3-scoping.md`](./v0.3-scoping.md) | Scope contract for v0.3: flag-level additions to existing operators, one new top-level command (`fetch`), cleanup items, and explicit out-of-scope tracking. |
+| [`forward-looking-analysis.md`](./forward-looking-analysis.md) | Forward-looking analysis from the v0.2 cycle: scope contract for v0.3, including flag-level additions to existing operators, one new top-level command (`fetch`) justified by the no-new-top-levels rule, cleanup items, and explicit out-of-scope tracking. |
 
 More artifacts may be added as v0.2 planning continues (frontend feasibility, file-extension followups, etc.).
 

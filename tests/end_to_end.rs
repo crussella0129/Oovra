@@ -17,28 +17,89 @@ fn elements_dir() -> &'static Path {
 }
 
 #[test]
-fn create_with_invalid_id_does_not_leave_orphan_file() {
-    // Regression: Create used to fs::write before validating, so a bad id
-    // left an unparseable file on disk. After the in-memory pre-validation
-    // fix, no file should be written.
-    use oovra::create::{scaffold, ScaffoldArgs};
+fn label_in_place_headers_a_plain_file() {
+    // `create --label`: a plain .md becomes an Oovra atom, its content
+    // preserved as the body.
+    use oovra::create::label_in_place;
+    let tmp = tempdir_for_test("label-in-place");
+    let file = tmp.join("numbered-sprints.md");
+    let body = "Work in numbered sprints; each sprint is research -> plan -> build -> test.";
+    std::fs::write(&file, body).unwrap();
+
+    let written = label_in_place(&file, body, "numbered-sprints", "1.0.0", "", false)
+        .expect("labeling a plain file should succeed");
+    assert_eq!(written, file, "label is in place");
+
+    let parsed = parse_file(&file).unwrap();
+    assert_eq!(parsed.header.id, "numbered-sprints");
+    assert_eq!(parsed.header.kind, oovra::PromptElementKind::Atom);
+    assert_eq!(parsed.body, body);
+}
+
+#[test]
+fn label_in_place_refuses_relabel_without_force() {
+    // An already-headered file is rejected unless force is set.
+    use oovra::create::label_in_place;
+    let tmp = tempdir_for_test("label-relabel");
+    let file = tmp.join("atom.md");
+    std::fs::write(&file, "body").unwrap();
+    label_in_place(&file, "body", "atom", "1.0.0", "", false).unwrap();
+
+    let content = std::fs::read_to_string(&file).unwrap();
+    assert!(label_in_place(&file, &content, "atom", "1.0.0", "", false).is_err());
+    assert!(label_in_place(&file, &content, "atom", "2.0.0", "", true).is_ok());
+}
+
+#[test]
+fn label_into_olib_writes_a_copy_into_the_library() {
+    // `create --olib`: the headered element lands at olib/<id>.md.
+    use oovra::create::label_into_olib;
+    let tmp = tempdir_for_test("label-into-olib");
+    let olib = tmp.join("olib");
+    let dest = label_into_olib(&olib, "The body.", "my-atom", "1.0.0", "")
+        .expect("labeling into olib should succeed");
+
+    assert_eq!(dest, olib.join("my-atom.md"));
+    let parsed = parse_file(&dest).unwrap();
+    assert_eq!(parsed.header.id, "my-atom");
+    assert_eq!(parsed.body, "The body.");
+}
+
+#[test]
+fn copy_oovra_into_olib_is_verbatim() {
+    // olib-to-olib transfer: an input that is already an Oovra file is
+    // copied byte-for-byte and named after its own header id.
+    use oovra::create::{copy_oovra_into_olib, label_into_olib};
+    let tmp = tempdir_for_test("olib-to-olib");
+    let src_olib = tmp.join("src-olib");
+    let src = label_into_olib(&src_olib, "Body.", "shared-atom", "1.0.0", "").unwrap();
+    let content = std::fs::read_to_string(&src).unwrap();
+
+    let dst_olib = tmp.join("dst-olib");
+    let dest = copy_oovra_into_olib(&dst_olib, &src, &content)
+        .expect("copying an Oovra file between olibs should succeed");
+
+    assert_eq!(dest, dst_olib.join("shared-atom.md"));
+    assert_eq!(
+        std::fs::read_to_string(&dest).unwrap(),
+        content,
+        "olib-to-olib copy must be byte-for-byte verbatim"
+    );
+    // And it is still a valid, single-header Oovra file.
+    assert_eq!(parse_file(&dest).unwrap().header.id, "shared-atom");
+}
+
+#[test]
+fn label_into_olib_with_invalid_id_leaves_no_orphan_file() {
+    // Regression: write() validates in memory before any disk write, so a
+    // bad id produces no partial file — not even the olib directory.
+    use oovra::create::label_into_olib;
     let tmp = tempdir_for_test("orphan-check");
-    let result = scaffold(ScaffoldArgs {
-        library_dir: tmp.clone(),
-        id: "BadID".into(), // not kebab-case
-        name: None,
-        version: "1.0.0".into(),
-        meta: String::new(),
-    });
-    assert!(result.is_err(), "expected scaffold to reject 'BadID'");
-    let entries: Vec<_> = std::fs::read_dir(&tmp)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .collect();
+    let olib = tmp.join("olib");
+    assert!(label_into_olib(&olib, "body", "BadID", "1.0.0", "").is_err());
     assert!(
-        entries.is_empty(),
-        "expected no files written, found {:?}",
-        entries.iter().map(|e| e.path()).collect::<Vec<_>>()
+        !olib.exists() || std::fs::read_dir(&olib).unwrap().next().is_none(),
+        "a rejected id must not leave files behind"
     );
 }
 

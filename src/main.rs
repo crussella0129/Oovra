@@ -6,16 +6,20 @@
 //!   - decompose Recover a compound's inputs (one level, or --full)
 //!   - compare   Diff two prompt elements (kind-aware)
 
-use std::path::PathBuf;
+use std::io::{IsTerminal, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
 use owo_colors::OwoColorize;
 
-use oovra::create::{label, scaffold, LabelArgs, ScaffoldArgs};
+use oovra::create::{copy_oovra_into_olib, ensure_dir, label_in_place, label_into_olib};
 use oovra::decompose::{decompose_full, report};
 use oovra::diff::{compare, DiffReport};
-use oovra::element::{parse_file_with, serialize, write, ParseOptions, PromptElement};
+use oovra::element::{
+    looks_like_oovra_file, parse, parse_file_with, serialize, write, ParseOptions, PromptElement,
+};
+use oovra::header::{is_kebab_case, slugify};
 use oovra::library::Library;
 use oovra::migrate::migrate_library;
 use oovra::render::{compose, render_text, ComposeRequest};
@@ -53,35 +57,36 @@ enum Command {
 
 #[derive(clap::Args, Debug)]
 struct CreateArgs {
-    /// Scaffold a new atom with this ID
-    #[arg(long, group = "mode")]
-    new: Option<String>,
+    /// Header these files IN PLACE — each file becomes an Oovra element.
+    /// Accepts files and/or directories (a directory contributes the .md
+    /// files directly inside it). Mutually exclusive with --olib.
+    #[arg(long, value_name = "PATH", num_args = 1.., group = "mode")]
+    label: Option<Vec<PathBuf>>,
 
-    /// Label an existing .md file at this path as an Oovra element
-    #[arg(long, value_name = "PATH", group = "mode")]
-    label: Option<PathBuf>,
+    /// Copy these files into the olib library as headered Oovra elements,
+    /// leaving the originals untouched. Accepts files and/or directories.
+    /// An input that is already an Oovra file is copied verbatim
+    /// (olib-to-olib transfer). Mutually exclusive with --label.
+    #[arg(long, value_name = "PATH", num_args = 1.., group = "mode")]
+    olib: Option<Vec<PathBuf>>,
 
-    /// Override the ID. Defaults: for --new, the value of --new; for --label, the file stem.
-    #[arg(long)]
-    id: Option<String>,
+    /// Olib library directory for --olib (created if missing).
+    #[arg(long, default_value = "./olib")]
+    library: PathBuf,
 
-    /// Human-readable name. Defaults to the ID.
-    #[arg(long)]
-    name: Option<String>,
-
-    /// Semver version
+    /// Semver version recorded on newly headered elements.
     #[arg(long, default_value = "1.0.0")]
     version: String,
 
-    /// Meta description
+    /// Meta description recorded on newly headered elements.
     #[arg(long, default_value = "")]
     meta: String,
 
-    /// Library directory (where new elements are written)
-    #[arg(long, default_value = "./elements")]
-    library: PathBuf,
+    /// Auto-slugify non-kebab-case filenames into ids without prompting.
+    #[arg(long)]
+    slug: bool,
 
-    /// Force-overwrite a file that already has an Oovra header (--label only)
+    /// Relabel a file that already carries an Oovra header (--label only).
     #[arg(long)]
     force: bool,
 }
@@ -113,7 +118,7 @@ struct ComposeArgs {
     out_meta: String,
 
     /// Library directory to resolve inputs from
-    #[arg(long, default_value = "./elements")]
+    #[arg(long, default_value = "./olib")]
     library: PathBuf,
 
     /// Print the rendered body to stdout instead of writing a file
@@ -173,47 +178,293 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
+/// Which `create` mode the user selected.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CreateMode {
+    /// Header files in place — the file becomes the element.
+    Label,
+    /// Copy headered elements into the olib library.
+    Olib,
+}
+
+/// The outcome of processing one input file.
+enum FileOutcome {
+    /// An element was written at this path.
+    Written(PathBuf),
+    /// The file was deliberately not processed, with a reason.
+    Skipped(String),
+}
+
+/// Resolution of the kebab-case id for a plain input file.
+enum IdResolution {
+    /// Use this id; if `rename_to` is set, rename the source file first.
+    Use {
+        id: String,
+        rename_to: Option<PathBuf>,
+    },
+    /// Skip this file, with a human-readable reason.
+    Skip(String),
+}
+
 fn run_create(args: CreateArgs) -> anyhow::Result<()> {
-    match (args.new.as_ref(), args.label.as_ref()) {
-        (Some(new_id), None) => {
-            let id = args.id.unwrap_or_else(|| new_id.clone());
-            let path = scaffold(ScaffoldArgs {
-                library_dir: args.library.clone(),
-                id: id.clone(),
-                name: args.name,
-                version: args.version,
-                meta: args.meta,
-            })
-            .with_context(|| format!("scaffolding element '{id}'"))?;
-            println!("{} {}", "Created".green().bold(), path.display());
-            Ok(())
+    let (mode, input_paths) = match (&args.label, &args.olib) {
+        (Some(paths), None) => (CreateMode::Label, paths.clone()),
+        (None, Some(paths)) => (CreateMode::Olib, paths.clone()),
+        (None, None) => {
+            return Err(anyhow!(
+                "pass --label <path>... (header files in place) or \
+                 --olib <path>... (copy headered elements into ./olib/)"
+            ))
         }
-        (None, Some(source_path)) => {
-            let id = args
-                .id
-                .or_else(|| {
-                    source_path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .map(|s| s.to_string())
-                })
-                .ok_or_else(|| {
-                    anyhow!("could not derive an ID from --label path; pass --id explicitly")
-                })?;
-            let path = label(LabelArgs {
-                source_path: source_path.clone(),
-                id: id.clone(),
-                name: args.name,
-                version: args.version,
-                meta: args.meta,
-                force: args.force,
-            })
-            .with_context(|| format!("labeling element '{id}'"))?;
-            println!("{} {}", "Labeled".green().bold(), path.display());
-            Ok(())
+        (Some(_), Some(_)) => unreachable!("clap 'mode' group forbids both"),
+    };
+
+    let (files, mut failures) = collect_input_files(&input_paths);
+    if files.is_empty() && failures.is_empty() {
+        return Err(anyhow!("no .md files found in the given path(s)"));
+    }
+
+    if mode == CreateMode::Olib {
+        ensure_dir(&args.library)
+            .with_context(|| format!("preparing olib directory {}", args.library.display()))?;
+    }
+
+    let mut written: Vec<PathBuf> = Vec::new();
+    let mut skipped: Vec<(PathBuf, String)> = Vec::new();
+
+    for file in &files {
+        match process_one(file, mode, &args) {
+            Ok(FileOutcome::Written(p)) => written.push(p),
+            Ok(FileOutcome::Skipped(reason)) => skipped.push((file.clone(), reason)),
+            Err(e) => failures.push((file.clone(), format!("{e:#}"))),
         }
-        (Some(_), Some(_)) => Err(anyhow!("pass exactly one of --new or --label")),
-        (None, None) => Err(anyhow!("pass exactly one of --new or --label")),
+    }
+
+    println!(
+        "{} {} written, {} skipped, {} failed",
+        "Create".green().bold(),
+        written.len(),
+        skipped.len(),
+        failures.len()
+    );
+    for p in &written {
+        println!("  {} {}", "✓".green(), p.display());
+    }
+    for (p, reason) in &skipped {
+        println!("  {} {} ({})", "-".dimmed(), p.display(), reason);
+    }
+    for (p, err) in &failures {
+        eprintln!("  {} {}: {}", "✗".red(), p.display(), err);
+    }
+    if !failures.is_empty() {
+        anyhow::bail!("{} file(s) failed to process", failures.len());
+    }
+    Ok(())
+}
+
+/// Expand the user-given paths into a flat list of `.md` files. A directory
+/// contributes the `.md` files directly inside it (non-recursive). Paths
+/// that don't exist, or directories that can't be read, become failures.
+fn collect_input_files(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<(PathBuf, String)>) {
+    let mut files = Vec::new();
+    let mut failures = Vec::new();
+    for p in paths {
+        if !p.exists() {
+            failures.push((p.clone(), "path does not exist".to_string()));
+        } else if p.is_dir() {
+            match std::fs::read_dir(p) {
+                Ok(entries) => {
+                    let mut md: Vec<PathBuf> = entries
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.path())
+                        .filter(|c| c.is_file() && has_md_extension(c))
+                        .collect();
+                    md.sort();
+                    files.extend(md);
+                }
+                Err(e) => failures.push((p.clone(), format!("cannot read directory: {e}"))),
+            }
+        } else {
+            files.push(p.clone());
+        }
+    }
+    (files, failures)
+}
+
+/// Case-insensitive check for a `.md` extension.
+fn has_md_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|x| x.to_str())
+        .map(|x| x.eq_ignore_ascii_case("md"))
+        .unwrap_or(false)
+}
+
+/// Process one input file according to the selected mode.
+fn process_one(file: &Path, mode: CreateMode, args: &CreateArgs) -> anyhow::Result<FileOutcome> {
+    let content =
+        std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+    let is_oovra = looks_like_oovra_file(&content);
+
+    match mode {
+        CreateMode::Olib => {
+            if is_oovra {
+                // olib-to-olib transfer: copy verbatim, keep the one header.
+                let dest = copy_oovra_into_olib(&args.library, file, &content)?;
+                return Ok(FileOutcome::Written(dest));
+            }
+            let (id, content) = match resolve_id(file, args.slug)? {
+                IdResolution::Skip(reason) => return Ok(FileOutcome::Skipped(reason)),
+                IdResolution::Use {
+                    id,
+                    rename_to: None,
+                } => (id, content),
+                IdResolution::Use {
+                    id,
+                    rename_to: Some(renamed),
+                } => {
+                    rename_source(file, &renamed)?;
+                    (id, std::fs::read_to_string(&renamed)?)
+                }
+            };
+            let dest = label_into_olib(&args.library, &content, &id, &args.version, &args.meta)?;
+            Ok(FileOutcome::Written(dest))
+        }
+        CreateMode::Label => {
+            if is_oovra {
+                if !args.force {
+                    return Ok(FileOutcome::Skipped(
+                        "already an Oovra file — pass --force to relabel".to_string(),
+                    ));
+                }
+                // Force-relabel keeps the element's existing id.
+                let existing = parse(&content, file)
+                    .with_context(|| format!("parsing {} for relabel", file.display()))?;
+                let dest = label_in_place(
+                    file,
+                    &content,
+                    &existing.header.id,
+                    &args.version,
+                    &args.meta,
+                    true,
+                )?;
+                return Ok(FileOutcome::Written(dest));
+            }
+            let (id, source, content) = match resolve_id(file, args.slug)? {
+                IdResolution::Skip(reason) => return Ok(FileOutcome::Skipped(reason)),
+                IdResolution::Use {
+                    id,
+                    rename_to: None,
+                } => (id, file.to_path_buf(), content),
+                IdResolution::Use {
+                    id,
+                    rename_to: Some(renamed),
+                } => {
+                    rename_source(file, &renamed)?;
+                    let c = std::fs::read_to_string(&renamed)?;
+                    (id, renamed, c)
+                }
+            };
+            let dest = label_in_place(&source, &content, &id, &args.version, &args.meta, false)?;
+            Ok(FileOutcome::Written(dest))
+        }
+    }
+}
+
+/// Rename a source file, failing if the destination already exists.
+fn rename_source(from: &Path, to: &Path) -> anyhow::Result<()> {
+    if to.exists() {
+        return Err(anyhow!(
+            "cannot rename {} -> {}: destination already exists",
+            from.display(),
+            to.display()
+        ));
+    }
+    std::fs::rename(from, to)
+        .with_context(|| format!("renaming {} -> {}", from.display(), to.display()))
+}
+
+/// Resolve the kebab-case id for a plain input file from its filename stem.
+///
+/// A kebab-case stem is used as-is. Otherwise the stem is slugified, and
+/// the choice of what to do is made by `--slug`, by an interactive prompt
+/// when stdin is a terminal, or — when neither applies — by skipping the
+/// file with advice.
+fn resolve_id(source: &Path, slug_flag: bool) -> anyhow::Result<IdResolution> {
+    let stem = source
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+
+    if is_kebab_case(stem) {
+        return Ok(IdResolution::Use {
+            id: stem.to_string(),
+            rename_to: None,
+        });
+    }
+
+    let slug = match slugify(stem) {
+        Some(s) => s,
+        None => {
+            return Ok(IdResolution::Skip(format!(
+                "filename {stem:?} has no characters usable for a kebab-case id"
+            )))
+        }
+    };
+
+    if slug_flag {
+        return Ok(IdResolution::Use {
+            id: slug,
+            rename_to: None,
+        });
+    }
+
+    if !std::io::stdin().is_terminal() {
+        return Ok(IdResolution::Skip(format!(
+            "filename {stem:?} isn't kebab-case — rerun with --slug, or rename it to '{slug}.md'"
+        )));
+    }
+
+    println!(
+        "  {}: filename isn't kebab-case, so it can't be the element id.",
+        source.display()
+    );
+    if prompt_yes_no(&format!("  Use the slug '{slug}' as the id?"))? {
+        return Ok(IdResolution::Use {
+            id: slug,
+            rename_to: None,
+        });
+    }
+    let renamed = source.with_file_name(format!("{slug}.md"));
+    if prompt_yes_no(&format!(
+        "  Rename the file {} -> {}?",
+        source.display(),
+        renamed.display()
+    ))? {
+        return Ok(IdResolution::Use {
+            id: slug,
+            rename_to: Some(renamed),
+        });
+    }
+    Ok(IdResolution::Skip(format!(
+        "filename {stem:?} isn't kebab-case — rename it (e.g. '{slug}.md') to include it"
+    )))
+}
+
+/// Ask a yes/no question on the terminal, repeating until a clear answer
+/// is given. EOF is treated as "no".
+fn prompt_yes_no(question: &str) -> anyhow::Result<bool> {
+    loop {
+        print!("{question} [y/n] ");
+        std::io::stdout().flush()?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            return Ok(false); // EOF
+        }
+        match line.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            _ => println!("  please answer 'y' or 'n'."),
+        }
     }
 }
 
@@ -505,4 +756,48 @@ fn run_migrate(args: MigrateArgs) -> anyhow::Result<()> {
 #[allow(dead_code)]
 fn _unused_imports_silencer() {
     let _ = serialize;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn has_md_extension_is_case_insensitive() {
+        assert!(has_md_extension(Path::new("a.md")));
+        assert!(has_md_extension(Path::new("a.MD")));
+        assert!(has_md_extension(Path::new("dir/a.Md")));
+        assert!(!has_md_extension(Path::new("a.txt")));
+        assert!(!has_md_extension(Path::new("a")));
+    }
+
+    #[test]
+    fn resolve_id_uses_kebab_stem_directly() {
+        match resolve_id(Path::new("drafts/numbered-sprints.md"), false).unwrap() {
+            IdResolution::Use { id, rename_to } => {
+                assert_eq!(id, "numbered-sprints");
+                assert!(rename_to.is_none());
+            }
+            IdResolution::Skip(_) => panic!("a kebab-case stem should resolve directly"),
+        }
+    }
+
+    #[test]
+    fn resolve_id_slugs_non_kebab_with_flag() {
+        match resolve_id(Path::new("drafts/My Draft.md"), true).unwrap() {
+            IdResolution::Use { id, rename_to } => {
+                assert_eq!(id, "my-draft");
+                assert!(rename_to.is_none());
+            }
+            IdResolution::Skip(_) => panic!("--slug should resolve a non-kebab stem"),
+        }
+    }
+
+    #[test]
+    fn resolve_id_skips_non_kebab_without_tty_or_flag() {
+        // Under `cargo test` stdin is not a terminal, so a non-kebab stem
+        // with no --slug must skip rather than block on a prompt.
+        let r = resolve_id(Path::new("drafts/My Draft.md"), false).unwrap();
+        assert!(matches!(r, IdResolution::Skip(_)));
+    }
 }

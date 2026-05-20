@@ -1,112 +1,118 @@
-//! Create: scaffold a new atom from scratch, or label an existing Markdown
-//! file by prepending a generated header.
+//! Create: turn plain Markdown files into Oovra atoms.
 //!
-//! Both modes produce atoms only — by construction Create cannot produce a
-//! compound. Use `compose` for that.
+//! Two file-based modes (the CLI picks exactly one):
 //!
-//! Both modes verify their work by re-parsing the output through the Stage 1
-//! parser. If the post-write parse fails, Create reports the error rather
-//! than leaving a broken file in the library.
+//! - **label** — prepend a header to a file *in place*. The file itself
+//!   becomes the element; no plain copy is left behind.
+//! - **olib** — write a headered *copy* into an `olib/` library directory,
+//!   leaving the original untouched. An input that is already an Oovra
+//!   file is copied verbatim (no second header), which makes olib-to-olib
+//!   transfer a side effect of the same mode.
+//!
+//! Both modes verify their work by re-parsing the output through the
+//! Stage 1 parser; a broken file is reported, never left on disk.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::element::{looks_like_oovra_file, write, PromptElement};
+use crate::element::{looks_like_oovra_file, parse, parse_file, write, PromptElement};
 use crate::error::{OovraError, Result};
 use crate::header::{PromptElementHeader, PromptElementKind};
 
-pub struct ScaffoldArgs {
-    pub library_dir: PathBuf,
-    pub id: String,
-    pub name: Option<String>,
-    pub version: String,
-    pub meta: String,
-}
-
-/// Scaffold a new order-0 element from scratch into `library_dir/<id>.md`.
-pub fn scaffold(args: ScaffoldArgs) -> Result<PathBuf> {
-    let path = args.library_dir.join(format!("{}.md", args.id));
-
-    let header = PromptElementHeader {
-        name: args.name.unwrap_or_else(|| args.id.clone()),
+/// Build the header for a freshly labeled atom. The element name defaults
+/// to the id — file-based authoring doesn't carry a separate display name.
+fn atom_header(id: &str, version: &str, meta: &str) -> PromptElementHeader {
+    PromptElementHeader {
+        name: id.to_string(),
         kind: PromptElementKind::Atom,
-        id: args.id.clone(),
-        version: args.version,
-        meta: args.meta,
+        id: id.to_string(),
+        version: version.to_string(),
+        meta: meta.to_string(),
         generated_at: None,
         render_mode: None,
         body_level: None,
         depth: None,
         composed_of: None,
-    };
-
-    let body = format!(
-        "<!-- TODO: write the prompt body for `{}` here. \
-         This element is an atom — hand-authored, internally consistent, portable across compositions. -->",
-        args.id
-    );
-
-    let element = PromptElement::new(header, body);
-    write(&element, &path)?;
-    Ok(path)
+    }
 }
 
-pub struct LabelArgs {
-    pub source_path: PathBuf,
-    pub id: String,
-    pub name: Option<String>,
-    pub version: String,
-    pub meta: String,
-    pub force: bool,
+/// Choose the body for a labeled element: the file's content verbatim, or
+/// a TODO placeholder when the source was empty.
+fn body_or_placeholder(content: &str, id: &str) -> String {
+    if content.trim().is_empty() {
+        format!("<!-- TODO: body for `{id}` was empty when labeled -->")
+    } else {
+        content.to_string()
+    }
 }
 
-/// Take an existing Markdown file (without an Oovra header) and prepend a
-/// generated header in place. Refuses to overwrite a file that already has
-/// an Oovra header unless `force` is true.
-pub fn label(args: LabelArgs) -> Result<PathBuf> {
-    if !args.source_path.exists() {
-        return Err(OovraError::FileNotFound(args.source_path.clone()));
+/// Prepend a header to `path` **in place** — the file becomes the element.
+///
+/// `content` is the file's current text (already read by the caller). If
+/// the file is already an Oovra file this refuses unless `force`, in which
+/// case the existing header is peeled off and replaced.
+pub fn label_in_place(
+    path: &Path,
+    content: &str,
+    id: &str,
+    version: &str,
+    meta: &str,
+    force: bool,
+) -> Result<PathBuf> {
+    let already = looks_like_oovra_file(content);
+    if already && !force {
+        return Err(OovraError::AlreadyLabeled(path.to_path_buf()));
     }
 
-    let original = fs::read_to_string(&args.source_path).map_err(|source| OovraError::Io {
-        path: args.source_path.clone(),
+    let body = if already {
+        // Force-relabel: peel the old frontmatter, or keep the whole file
+        // verbatim if the format is too non-standard to split cleanly.
+        peel_existing_frontmatter(content).unwrap_or_else(|| content.to_string())
+    } else {
+        body_or_placeholder(content, id)
+    };
+
+    let element = PromptElement::new(atom_header(id, version, meta), body);
+    write(&element, path)?;
+    Ok(path.to_path_buf())
+}
+
+/// Write a headered *copy* of a plain Markdown file into `olib_dir/<id>.md`.
+/// The original file is never touched.
+pub fn label_into_olib(
+    olib_dir: &Path,
+    content: &str,
+    id: &str,
+    version: &str,
+    meta: &str,
+) -> Result<PathBuf> {
+    let element = PromptElement::new(
+        atom_header(id, version, meta),
+        body_or_placeholder(content, id),
+    );
+    let dest = olib_dir.join(format!("{id}.md"));
+    write(&element, &dest)?;
+    Ok(dest)
+}
+
+/// Copy an input that is *already* an Oovra file into `olib_dir`, verbatim.
+///
+/// The content is validated by a full parse first (so garbage cannot enter
+/// the library), then written byte-for-byte to `olib_dir/<id>.md` named
+/// after its own header id. This is what makes `--olib` double as an
+/// olib-to-olib transfer: an already-headered input keeps its single
+/// header instead of gaining a second one.
+pub fn copy_oovra_into_olib(olib_dir: &Path, source: &Path, content: &str) -> Result<PathBuf> {
+    let element = parse(content, source)?;
+    ensure_dir(olib_dir)?;
+    let dest = olib_dir.join(format!("{}.md", element.header.id));
+    fs::write(&dest, content).map_err(|source| OovraError::WriteIo {
+        path: dest.clone(),
         source,
     })?;
-
-    if looks_like_oovra_file(&original) && !args.force {
-        return Err(OovraError::AlreadyLabeled(args.source_path.clone()));
-    }
-
-    let body = if looks_like_oovra_file(&original) {
-        // Force-relabel: try to peel off the existing header by splitting at
-        // the second `+++`. If that fails, just reuse the original content
-        // verbatim — better to keep the body than lose it.
-        peel_existing_frontmatter(&original).unwrap_or_else(|| original.clone())
-    } else if original.trim().is_empty() {
-        format!(
-            "<!-- TODO: body for `{}` was empty when labeled -->",
-            args.id
-        )
-    } else {
-        original.clone()
-    };
-
-    let header = PromptElementHeader {
-        name: args.name.unwrap_or_else(|| args.id.clone()),
-        kind: PromptElementKind::Atom,
-        id: args.id.clone(),
-        version: args.version,
-        meta: args.meta,
-        generated_at: None,
-        render_mode: None,
-        body_level: None,
-        depth: None,
-        composed_of: None,
-    };
-
-    let element = PromptElement::new(header, body);
-    write(&element, &args.source_path)?;
-    Ok(args.source_path)
+    // Paranoia: re-parse what landed on disk.
+    parse_file(&dest)?;
+    Ok(dest)
 }
 
 /// Best-effort: strip the first `+++ ... +++` frontmatter block. Returns

@@ -198,6 +198,37 @@ pub fn is_kebab_case(s: &str) -> bool {
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+/// Best-effort conversion of an arbitrary string into a kebab-case id.
+///
+/// Lowercases ASCII letters, turns every run of characters that aren't
+/// lowercase ASCII alphanumerics into a single hyphen, and trims
+/// leading/trailing hyphens. The result, when `Some`, always satisfies
+/// [`is_kebab_case`]. Returns `None` when the input has no usable
+/// characters (e.g. all punctuation), since no valid id can be formed.
+pub fn slugify(s: &str) -> Option<String> {
+    let mut out = String::with_capacity(s.len());
+    let mut pending_hyphen = false;
+    for c in s.chars() {
+        let lc = c.to_ascii_lowercase();
+        if lc.is_ascii_lowercase() || lc.is_ascii_digit() {
+            if pending_hyphen && !out.is_empty() {
+                out.push('-');
+            }
+            pending_hyphen = false;
+            out.push(lc);
+        } else if !out.is_empty() {
+            // Any other character is a separator; collapse runs to one hyphen
+            // and never emit a leading or trailing one.
+            pending_hyphen = true;
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 /// Validate semver per the `semver` crate.
 pub fn is_valid_semver(s: &str) -> bool {
     semver::Version::parse(s).is_ok()
@@ -231,6 +262,44 @@ mod tests {
         assert!(!is_kebab_case("-leading"));
         assert!(!is_kebab_case("trailing-"));
         assert!(!is_kebab_case("double--dash"));
+    }
+
+    #[test]
+    fn slugify_produces_valid_kebab_ids() {
+        // Whatever slugify returns must itself pass is_kebab_case.
+        for input in [
+            "My Draft",
+            "research -> plan -> build",
+            "v2.0  Beta!",
+            "Numbered_Sprints",
+            "---leading and trailing---",
+            "already-kebab",
+        ] {
+            let slug = slugify(input).expect("expected a slug");
+            assert!(
+                is_kebab_case(&slug),
+                "slugify({input:?}) = {slug:?} is not kebab-case"
+            );
+        }
+    }
+
+    #[test]
+    fn slugify_specific_mappings() {
+        assert_eq!(slugify("My Draft").as_deref(), Some("my-draft"));
+        assert_eq!(
+            slugify("research -> plan").as_deref(),
+            Some("research-plan")
+        );
+        assert_eq!(slugify("v2.0 Beta").as_deref(), Some("v2-0-beta"));
+        assert_eq!(slugify("already-kebab").as_deref(), Some("already-kebab"));
+    }
+
+    #[test]
+    fn slugify_returns_none_for_unusable_input() {
+        assert_eq!(slugify(""), None);
+        assert_eq!(slugify("   "), None);
+        assert_eq!(slugify("___"), None);
+        assert_eq!(slugify("!@#$%"), None);
     }
 
     #[test]

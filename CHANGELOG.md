@@ -4,6 +4,40 @@ All notable changes to Oovra are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **`oovra create` is now file-based, with two modes.** `--new` (CLI-arg
+  scaffolding) is removed; authoring is always from plain Markdown files
+  written in an editor, which sidesteps shell-quoting of prompt content
+  entirely.
+  - `oovra create --label <path>...` headers files **in place** — each
+    file becomes the element.
+  - `oovra create --olib <path>...` writes headered **copies** into the
+    `olib/` library, leaving the originals untouched.
+  Both accept files and directories (a directory contributes the `.md`
+  files directly inside it) and print a `written / skipped / failed`
+  summary over the batch.
+- **The default library directory is now `./olib`** (was `./elements`)
+  for `oovra create` and `oovra compose`; `--library` still overrides it.
+
+### Added
+
+- **olib-to-olib transfer.** An input to `--olib` that is already an
+  Oovra file is copied **verbatim** — no second header — so `--olib`
+  doubles as a way to move elements between libraries.
+- **`slugify` + interactive id resolution.** The element id is the
+  filename stem; a non-kebab-case stem is slugified, then confirmed
+  interactively (use the slug / rename the file / skip). `--slug`
+  auto-applies the slug with no prompt; non-interactive runs skip
+  non-kebab-named files with advice.
+
+### Removed
+
+- `oovra create --new` and the `~~~` inline-body marker — superseded by
+  the file-based `--label` / `--olib` modes.
+
 ## [0.2.0] — 2026-05-13
 
 This release replaces the numeric `order` field with an explicit

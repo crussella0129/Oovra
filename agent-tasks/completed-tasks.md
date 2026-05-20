@@ -341,3 +341,94 @@ as tasks are dispatched from `agent-tasks.md`. Persists across sprints.
   review. Roadmap next: **s5 — WASM filesystem shim + Trunk
   pipeline** (higher-leverage) or s6 — egui Panel-alias
   migration (lower-effort cleanup).
+
+---
+
+## Sprint s5 — Filename-suffix versioning + Save/Save-As-New-Version + tree view
+
+**Note:** s5 was redirected from the original roadmap pickup (WASM
+filesystem shim) to versioning work after user feedback. The shim
+is still on the roadmap.
+
+### Library
+
+- **L5.1** (2026-05-20) — Added `header::parse_filename_version`
+  that detects `<canonical>-v<X>-<Y>-<Z>` at the end of a stem
+  (last-occurrence, all-ASCII-digit groups). Seven unit tests.
+- **L5.2** (2026-05-20) — Added `header::compose_versioned_filename`
+  (the inverse). Three unit tests (round-trip, strips pre+build,
+  rejects garbage).
+- **L5.3** (2026-05-20) — Added `BumpKind::default() = Patch` so
+  the GUI can store a `BumpKind` field with `#[serde(skip)]`.
+
+### CLI
+
+- **C5.1–C5.2** (2026-05-20) — Added `Command::ForkVersion` +
+  `run_fork_version` to `src/main.rs`. Subcommand:
+  `oovra fork-version <file> [--bump patch|minor|major]`. Writes
+  a sibling at `<dir>/<canonical>-v<dashed-new>.md` with header
+  fields set: `id = full stem`, `name = canonical`, `version =
+  bumped`. Original file untouched.
+- **C5.3** (2026-05-20) — Added integration test
+  `fork_version_creates_versioned_sibling` in
+  `tests/end_to_end.rs`.
+
+### GUI
+
+- **G5.1** (2026-05-20) — Editor field relabels: "id" → "Filesystem
+  Name" (read-only TextEdit), "name" → "Component-ID" (editable),
+  "version" + "meta" unchanged.
+- **G5.2** (2026-05-20) — Editor::open auto-parses the filename
+  suffix; if a version is present in the suffix, it overrides the
+  in-memory editor version. Component-ID auto-fills with the
+  parsed canonical id when `header.name == header.id` (uncustomized
+  default).
+- **G5.3** (2026-05-20) — Editor button row redesigned:
+  **Save** (sets `save_confirm_pending`), **Save As New Version**
+  (calls `save_as_new_version_now`), bump-kind ComboBox (Patch /
+  Minor / Major), Reload, Bump (no-fork). The Save button shows
+  a confirm Window with the consequence spelled out.
+- **G5.4** (2026-05-20) — Library Components replaced with a
+  recursive tree (`render_component_tree` + `render_tree_node`).
+  Atoms render as leaf rows with checkbox + selectable label.
+  Compounds render as `CollapsingHeader` containing recursive
+  node renders. Defensive depth cap at 16.
+- **G5.5** (2026-05-20) — Expand all / Collapse all buttons in the
+  Library Components header; drive a `pending_open: Option<bool>`
+  flag consumed once per frame by every CollapsingHeader.
+- **G5.6** (2026-05-20) — `save_as_new_version_now`: parses the
+  current editor's filesystem name, bumps the version, composes
+  the new sibling filename, writes a fresh PromptElement, then
+  reloads the active olib so the sibling appears in the tree.
+- **G5.7** (2026-05-20) — `render_save_confirm` Window in `ui()`
+  — modal-ish "Are you sure?" with consequences spelled out;
+  Yes triggers `editor.save()`, Cancel clears the pending flag.
+
+### Test Phase
+
+- **T5.1** (2026-05-20) — `cargo test -p oovra` **81 PASS** (51
+  lib unit + 4 main unit + 26 integ; was 70 in s4).
+- **T5.2** (2026-05-20) — `cargo test -p oovra-gui` **15 PASS**
+  (3 app + 4 editor + 4 canvas + 4 compare).
+- **T5.3** (2026-05-20) — `cargo build --target
+  wasm32-unknown-unknown -p oovra-gui` PASS, 11.47s.
+- **T5.4** (2026-05-20) — `oovra fork-version` CLI smoke against
+  the mock library: forked `citation-discipline` v1.0.0 →
+  `citation-discipline-v1-0-1` v1.0.1, verified via `oovra
+  inspect`.
+- **T5.5** (2026-05-20) — Composed a higher-order compound
+  `meta-agent` (body_level 2) in the mock library that includes
+  the existing `coding-agent-prompt` compound — gives the GUI
+  tree two real levels of recursion to demonstrate.
+- **T5.6** (2026-05-20) — `oovra-gui` window up at PID 61696
+  with the new tree, Save / Save As New Version flow, and the
+  field relabels.
+- **T5.7** (2026-05-20) — WSL Ubuntu `cargo test -p oovra` PASS,
+  identical 51+4+26 = 81 tests. Cross-platform invariant intact.
+
+### Sprint s5 close
+
+- Sprint-tests docs authored at `sprints/s5/sprint-tests/`.
+  Acceptance criteria all satisfied. Window left up. Roadmap
+  next: **s6 — egui Panel-alias migration** OR return to **WASM
+  filesystem shim** (originally roadmap s5).

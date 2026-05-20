@@ -78,6 +78,19 @@ pub struct OovraApp {
     #[serde(skip)]
     view: CentralView,
 
+    /// True while a save-confirm dialog is up (sprint s5).
+    #[serde(skip)]
+    save_confirm_pending: bool,
+    /// Force every CollapsingHeader in the components tree to this
+    /// state on the next frame, then clear (sprint s5). Drives the
+    /// Expand all / Collapse all buttons.
+    #[serde(skip)]
+    pending_open: Option<bool>,
+    /// Currently selected bump kind for "Save As New Version"
+    /// (sprint s5).
+    #[serde(skip)]
+    new_version_bump: oovra::header::BumpKind,
+
     /// One-line status / error string surfaced under the toolbar.
     #[serde(skip)]
     status: String,
@@ -90,7 +103,6 @@ pub struct OovraApp {
 #[derive(Debug, Clone)]
 struct AtomEntry {
     id: String,
-    kind: oovra::PromptElementKind,
     path: PathBuf,
 }
 
@@ -109,6 +121,9 @@ impl Default for OovraApp {
             canvas: CanvasState::new(),
             compare: CompareState::new(),
             view: CentralView::Editor,
+            save_confirm_pending: false,
+            pending_open: None,
+            new_version_bump: oovra::header::BumpKind::default(),
             status: String::new(),
         }
     }
@@ -170,7 +185,6 @@ impl OovraApp {
                     .values()
                     .map(|e| AtomEntry {
                         id: e.header.id.clone(),
-                        kind: e.header.kind,
                         path: e.source_path.clone().unwrap_or_default(),
                     })
                     .collect();
@@ -227,39 +241,96 @@ impl OovraApp {
         }
     }
 
-    fn render_atom_list(&mut self, ui: &mut egui::Ui) {
+    /// Render the Library Components as a recursive tree. Atoms are
+    /// leaf rows; compounds are `CollapsingHeader`s that expand to
+    /// show their `composed_of` inputs, themselves resolved as tree
+    /// nodes (recursively). Each row carries the s3 conventions:
+    /// left-side checkbox toggles canvas inclusion, row-body click
+    /// opens the component in the editor.
+    fn render_component_tree(&mut self, ui: &mut egui::Ui) {
         if self.atom_index.is_empty() {
             ui.weak("(no olib selected — pick one on the left)");
             return;
         }
-        // Snapshot for the borrow — owned so we can mutate self
-        // while iterating.
-        let entries: Vec<(String, oovra::PromptElementKind)> = self
-            .atom_index
-            .iter()
-            .map(|a| (a.id.clone(), a.kind))
-            .collect();
+        let top_ids: Vec<String> = self.atom_index.iter().map(|a| a.id.clone()).collect();
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (i, (id, kind)) in entries.into_iter().enumerate() {
+            for id in top_ids {
+                self.render_tree_node(ui, &id, 0);
+            }
+        });
+        // Whichever expand/collapse-all the user requested was applied
+        // this frame; reset so manual toggles work going forward.
+        self.pending_open = None;
+    }
+
+    /// Render one node of the component tree. Recurses into a
+    /// compound's `composed_of` inputs.
+    fn render_tree_node(&mut self, ui: &mut egui::Ui, id: &str, depth: u32) {
+        // Defensive depth cap; real recipes are nowhere near this.
+        if depth > 16 {
+            ui.weak("(depth limit reached)");
+            return;
+        }
+        // Pull the kind + child id list without holding a long borrow
+        // of self.loaded across recursion.
+        let (kind, inputs): (oovra::PromptElementKind, Vec<String>) = {
+            let Some(lib) = &self.loaded else {
+                return;
+            };
+            let Some(elem) = lib.elements.get(id) else {
+                ui.weak(format!("(missing: {id})"));
+                return;
+            };
+            let inputs = elem
+                .header
+                .composed_of
+                .as_ref()
+                .map(|v| v.iter().map(|i| i.id.clone()).collect())
+                .unwrap_or_default();
+            (elem.header.kind, inputs)
+        };
+
+        let canvas_includes = self.canvas.contains(id);
+        let index_pos = self.atom_index.iter().position(|a| a.id == *id);
+
+        match kind {
+            oovra::PromptElementKind::Atom => {
                 ui.horizontal(|ui| {
-                    // Per-row checkbox: toggles canvas inclusion
-                    // independently of which row is open in the editor.
-                    let mut included = self.canvas.contains(&id);
+                    let mut included = canvas_includes;
                     if ui.checkbox(&mut included, "").changed() {
-                        self.canvas.toggle(&id);
+                        self.canvas.toggle(id);
                     }
-                    let is_sel = self.selected_atom == Some(i);
-                    let glyph = match kind {
-                        oovra::PromptElementKind::Atom => "·",
-                        oovra::PromptElementKind::Compound => "▣",
-                    };
-                    let label = format!("{glyph}  {id}");
-                    if ui.selectable_label(is_sel, label).clicked() {
+                    let is_sel = index_pos
+                        .map(|i| self.selected_atom == Some(i))
+                        .unwrap_or(false);
+                    let label = format!("·  {id}");
+                    if ui.selectable_label(is_sel, label).clicked()
+                        && let Some(i) = index_pos
+                    {
                         self.select_atom(i);
                     }
                 });
             }
-        });
+            oovra::PromptElementKind::Compound => {
+                ui.horizontal(|ui| {
+                    let mut included = canvas_includes;
+                    if ui.checkbox(&mut included, "").changed() {
+                        self.canvas.toggle(id);
+                    }
+                    let pending = self.pending_open;
+                    let mut header = egui::CollapsingHeader::new(format!("▣  {id}"))
+                        .id_salt(format!("tree-{depth}-{id}"));
+                    if let Some(open) = pending {
+                        header = header.open(Some(open));
+                    }
+                    header.show(ui, |ui| {
+                        for child_id in inputs {
+                            self.render_tree_node(ui, &child_id, depth + 1);
+                        }
+                    });
+                });
+            }
+        }
     }
 
     /// Render the autocompose canvas: ordered (drag-reorderable) list
@@ -339,6 +410,111 @@ impl OovraApp {
         // post-save library refresh has clean mutable access to self.
         if save_clicked {
             self.handle_canvas_save();
+        }
+    }
+
+    /// Fork the editor's current state into a sibling file at
+    /// `<olib>/<canonical>-v<dashed-new-version>.md` per the s5
+    /// versioning convention. Refresh the loaded library on success
+    /// so the new sibling appears in the Library Components tree.
+    fn save_as_new_version_now(&mut self) {
+        let Some(ed) = self.editor.as_ref() else {
+            return;
+        };
+        let Some(idx) = self.selected_olib else {
+            return;
+        };
+        let Some(olib_dir) = self.discovered.get(idx).map(|d| d.path.clone()) else {
+            return;
+        };
+
+        let new_ver = match oovra::header::bump_version(&ed.version, self.new_version_bump) {
+            Ok(v) => v,
+            Err(e) => {
+                self.status = format!("Save As New Version failed: bump: {e}");
+                return;
+            }
+        };
+
+        let (canonical, _) = oovra::header::parse_filename_version(&ed.id);
+        let new_stem = match oovra::header::compose_versioned_filename(&canonical, &new_ver) {
+            Ok(s) => s,
+            Err(e) => {
+                self.status = format!("Save As New Version failed: filename: {e}");
+                return;
+            }
+        };
+        let new_path = olib_dir.join(format!("{new_stem}.md"));
+
+        let header = oovra::PromptElementHeader {
+            name: canonical.clone(),
+            kind: oovra::PromptElementKind::Atom,
+            id: new_stem.clone(),
+            version: new_ver.clone(),
+            meta: ed.meta.clone(),
+            generated_at: None,
+            render_mode: None,
+            body_level: None,
+            depth: None,
+            composed_of: None,
+        };
+        let element = oovra::PromptElement::new(header, ed.body.clone());
+
+        if let Err(e) = oovra::write(&element, &new_path) {
+            self.status = format!("Save As New Version write failed: {e}");
+            return;
+        }
+        self.status = format!("Saved new version v{new_ver} at {}", new_path.display());
+        // Refresh the active library so the new sibling appears.
+        self.load_selected_olib(idx, &olib_dir);
+    }
+
+    /// Render the modal-ish "Are you sure?" save confirm window.
+    /// Called from `ui()` once per frame; only draws when
+    /// `save_confirm_pending` is true.
+    fn render_save_confirm(&mut self, ctx: &egui::Context) {
+        if !self.save_confirm_pending {
+            return;
+        }
+        let mut decide: Option<bool> = None;
+        let editor_label = self
+            .editor
+            .as_ref()
+            .map(|ed| format!("'{}' v{}", ed.id, ed.version))
+            .unwrap_or_else(|| "this component".to_owned());
+        egui::Window::new("Confirm save in place")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(format!("Save changes to {editor_label} in place?"));
+                ui.add_space(4.0);
+                ui.weak(
+                    "Anyone composing with this id @ version will see the new \
+                     content under an existing pin — this is a release-after-\
+                     publish edit. If you want to preserve the existing \
+                     version, cancel and use Save As New Version instead.",
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Yes, save in place").clicked() {
+                        decide = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        decide = Some(false);
+                    }
+                });
+            });
+        match decide {
+            Some(true) => {
+                if let Some(ed) = self.editor.as_mut() {
+                    let _ = ed.save();
+                }
+                self.save_confirm_pending = false;
+            }
+            Some(false) => {
+                self.save_confirm_pending = false;
+            }
+            None => {}
         }
     }
 
@@ -461,20 +637,26 @@ impl OovraApp {
     }
 
     fn render_editor(&mut self, ui: &mut egui::Ui) {
+        // Local action flags collected during the editor render and
+        // applied after the ed borrow releases.
+        let mut request_save_confirm = false;
+        let mut request_save_as_new_version = false;
+
         // Three states: editor loaded; compound (read-only msg); nothing.
         if let Some(ed) = &mut self.editor {
-            // The central panel already carries the "Component Editor"
-            // heading; no inner heading needed here.
             ui.add_space(2.0);
             egui::Grid::new("editor_fields")
                 .num_columns(2)
-                .min_col_width(80.0)
+                .min_col_width(110.0)
                 .show(ui, |ui| {
-                    ui.weak("id");
+                    ui.weak("Filesystem Name");
+                    // Read-only: tied to the on-disk file. Use Save As
+                    // New Version (or a future explicit rename) to
+                    // change it.
                     ui.add_enabled(false, egui::TextEdit::singleline(&mut ed.id.clone()));
                     ui.end_row();
 
-                    ui.weak("name");
+                    ui.weak("Component-ID");
                     if ui.text_edit_singleline(&mut ed.name).changed() {
                         ed.dirty = true;
                     }
@@ -512,17 +694,39 @@ impl OovraApp {
                     .add_enabled(ed.dirty, egui::Button::new(save_label))
                     .clicked()
                 {
-                    let _ = ed.save();
+                    request_save_confirm = true;
                 }
+                if ui.button("Save As New Version").clicked() {
+                    request_save_as_new_version = true;
+                }
+                egui::ComboBox::from_id_salt("new_version_bump")
+                    .selected_text(format!("{:?}", self.new_version_bump))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.new_version_bump,
+                            oovra::header::BumpKind::Patch,
+                            "Patch",
+                        );
+                        ui.selectable_value(
+                            &mut self.new_version_bump,
+                            oovra::header::BumpKind::Minor,
+                            "Minor",
+                        );
+                        ui.selectable_value(
+                            &mut self.new_version_bump,
+                            oovra::header::BumpKind::Major,
+                            "Major",
+                        );
+                    });
                 if ui.button("Reload").clicked() {
                     let _ = ed.reload();
                 }
-                if ui.button("Bump patch").clicked() {
-                    match oovra::header::bump_version(&ed.version, oovra::header::BumpKind::Patch) {
+                if ui.button("Bump (no-fork)").clicked() {
+                    match oovra::header::bump_version(&ed.version, self.new_version_bump) {
                         Ok(new) => {
                             ed.version = new;
                             ed.dirty = true;
-                            ed.status = "patch bumped — Save to persist".to_owned();
+                            ed.status = "version bumped in-memory — Save to persist".to_owned();
                         }
                         Err(e) => {
                             ed.status = format!("Bump failed: {e}");
@@ -532,6 +736,17 @@ impl OovraApp {
                 ui.separator();
                 ui.weak(&ed.status);
             });
+            // Fall through past the ed borrow so we can apply the
+            // button-collected requests with full mutable access to
+            // self.
+        }
+        if request_save_confirm {
+            self.save_confirm_pending = true;
+        }
+        if request_save_as_new_version {
+            self.save_as_new_version_now();
+        }
+        if self.editor.is_some() {
             return;
         }
         if let Some(msg) = &self.compound_msg {
@@ -624,11 +839,19 @@ impl eframe::App for OovraApp {
         // in the oovra format that `compose` operates on).
         egui::SidePanel::left("components")
             .resizable(true)
-            .default_width(240.0)
+            .default_width(260.0)
             .show_inside(ui, |ui| {
                 ui.heading("Library Components");
+                ui.horizontal(|ui| {
+                    if ui.small_button("Expand all").clicked() {
+                        self.pending_open = Some(true);
+                    }
+                    if ui.small_button("Collapse all").clicked() {
+                        self.pending_open = Some(false);
+                    }
+                });
                 ui.separator();
-                self.render_atom_list(ui);
+                self.render_component_tree(ui);
             });
 
         // Central: the Component Editor (with Editor / Canvas tabs).
@@ -648,6 +871,10 @@ impl eframe::App for OovraApp {
                 CentralView::Compare => self.render_compare(ui),
             }
         });
+
+        // The save-confirm modal renders on top of the panels, last,
+        // so it's always visible when pending.
+        self.render_save_confirm(ui.ctx());
     }
 }
 

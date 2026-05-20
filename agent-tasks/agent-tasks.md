@@ -10,6 +10,8 @@ sprints and reflects the work currently in flight.
 
 ## (empty — between sprints)
 
-Sprint s4 is closed. Next pickup per `/sprints/roadmap.md`:
-**s5 — WASM filesystem shim + Trunk pipeline** (recommended) or
-s6 — egui Panel-alias migration (lower-effort).
+Sprint s5 is closed. Roadmap-next options:
+- **s6 — egui Panel-alias migration** (clear deprecation
+  `#[allow]`s; low effort).
+- **WASM filesystem shim + Trunk pipeline** (originally roadmap
+  s5; deferred when the user redirected to versioning).

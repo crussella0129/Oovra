@@ -234,10 +234,58 @@ pub fn is_valid_semver(s: &str) -> bool {
     semver::Version::parse(s).is_ok()
 }
 
+/// Parse a filename stem into a `(canonical_id, optional_version)` pair
+/// per the convention `<canonical>-v<X>-<Y>-<Z>`, where X, Y, Z are
+/// all-ASCII-digit groups.
+///
+/// The trailing three-part digit suffix is the marker; the *last*
+/// `-v` in the stem that's followed by exactly three dash-separated
+/// digit groups (anchored to end-of-stem) is taken as the version.
+/// Returns the version as `X.Y.Z` (dashes converted to dots) so the
+/// caller can hand it directly to `semver::Version::parse`.
+///
+/// If no valid suffix is found, the whole stem is returned as the
+/// canonical id with `None` for the version.
+pub fn parse_filename_version(stem: &str) -> (String, Option<String>) {
+    // All starting positions of "-v" in `stem`.
+    let positions: Vec<usize> = stem.match_indices("-v").map(|(i, _)| i).collect();
+    // Try from the last position backward — the trailing suffix wins.
+    for &pos in positions.iter().rev() {
+        let after_v = &stem[pos + 2..];
+        let parts: Vec<&str> = after_v.split('-').collect();
+        if parts.len() == 3
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        {
+            let canonical = stem[..pos].to_string();
+            let version = format!("{}.{}.{}", parts[0], parts[1], parts[2]);
+            return (canonical, Some(version));
+        }
+    }
+    (stem.to_string(), None)
+}
+
+/// Compose a versioned filename stem from a canonical id and a semver
+/// string. Uses the MAJOR-MINOR-PATCH parts only (drops pre-release
+/// and build-metadata), giving a stem that round-trips through
+/// [`parse_filename_version`].
+pub fn compose_versioned_filename(
+    canonical: &str,
+    version: &str,
+) -> std::result::Result<String, String> {
+    let ver = semver::Version::parse(version).map_err(|e| format!("not valid semver: {e}"))?;
+    Ok(format!(
+        "{}-v{}-{}-{}",
+        canonical, ver.major, ver.minor, ver.patch
+    ))
+}
+
 /// Kind of semver bump applied by [`bump_version`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BumpKind {
     /// `1.2.3` -> `1.2.4`. Small edits; default for typical revisions.
+    #[default]
     Patch,
     /// `1.2.3` -> `1.3.0`. New behavior added, backward-compatible.
     Minor,
@@ -369,6 +417,87 @@ mod tests {
         assert!(bump_version("not-a-version", BumpKind::Patch).is_err());
         assert!(bump_version("", BumpKind::Patch).is_err());
         assert!(bump_version("1.0", BumpKind::Patch).is_err());
+    }
+
+    #[test]
+    fn parse_filename_version_strips_three_part_suffix() {
+        assert_eq!(
+            parse_filename_version("citation-discipline-v1-0-1"),
+            ("citation-discipline".to_string(), Some("1.0.1".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_filename_version_no_suffix() {
+        assert_eq!(
+            parse_filename_version("citation-discipline"),
+            ("citation-discipline".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn parse_filename_version_handles_v_in_canonical() {
+        assert_eq!(
+            parse_filename_version("my-vendor-prompt-v2-0-0"),
+            ("my-vendor-prompt".to_string(), Some("2.0.0".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_filename_version_rejects_two_part_suffix() {
+        // Only two digit groups -> not a valid suffix.
+        assert_eq!(
+            parse_filename_version("prompt-v1-0"),
+            ("prompt-v1-0".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn parse_filename_version_rejects_non_digit_after_v() {
+        // The trailing groups have non-digit characters.
+        assert_eq!(
+            parse_filename_version("name-with-v8-not-a-version"),
+            ("name-with-v8-not-a-version".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn parse_filename_version_handles_multidigit_parts() {
+        assert_eq!(
+            parse_filename_version("prompt-v12-34-56"),
+            ("prompt".to_string(), Some("12.34.56".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_filename_version_prefers_trailing_suffix() {
+        // An earlier `-vX-Y-Z`-shaped sequence in the canonical is
+        // preserved as part of the canonical when a later valid
+        // suffix exists.
+        assert_eq!(
+            parse_filename_version("my-v1-2-3-prompt-v4-5-6"),
+            ("my-v1-2-3-prompt".to_string(), Some("4.5.6".to_string()))
+        );
+    }
+
+    #[test]
+    fn compose_versioned_filename_round_trips() {
+        let stem = compose_versioned_filename("citation-discipline", "1.0.1").unwrap();
+        assert_eq!(stem, "citation-discipline-v1-0-1");
+        let (canonical, version) = parse_filename_version(&stem);
+        assert_eq!(canonical, "citation-discipline");
+        assert_eq!(version.as_deref(), Some("1.0.1"));
+    }
+
+    #[test]
+    fn compose_versioned_filename_strips_pre_and_build() {
+        let stem = compose_versioned_filename("p", "1.2.3-rc1+sha").unwrap();
+        assert_eq!(stem, "p-v1-2-3");
+    }
+
+    #[test]
+    fn compose_versioned_filename_rejects_garbage() {
+        assert!(compose_versioned_filename("p", "not-a-version").is_err());
     }
 
     #[test]

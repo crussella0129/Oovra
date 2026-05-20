@@ -55,16 +55,40 @@ impl Editor {
             Err(e) => return OpenResult::Failed(format!("parse failed: {e}")),
         };
         match element.header.kind {
-            PromptElementKind::Atom => OpenResult::Loaded(Editor {
-                path: path.to_path_buf(),
-                id: element.header.id,
-                name: element.header.name,
-                version: element.header.version,
-                meta: element.header.meta,
-                body: element.body,
-                dirty: false,
-                status: format!("Loaded {}", path.display()),
-            }),
+            PromptElementKind::Atom => {
+                // Auto-parse the filename suffix per the convention
+                // `<canonical>-v<X>-<Y>-<Z>`. If a version is found in
+                // the filename, it's authoritative — overrides the
+                // header's version field for what the user sees in
+                // the editor. The Component-ID (header.name) is
+                // auto-filled with the canonical id IF the existing
+                // name hasn't been customized (i.e. it still equals
+                // the existing id).
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&element.header.id);
+                let (canonical, parsed_version) = oovra::header::parse_filename_version(stem);
+
+                let version = parsed_version
+                    .clone()
+                    .unwrap_or_else(|| element.header.version.clone());
+                let name = if element.header.name == element.header.id {
+                    canonical
+                } else {
+                    element.header.name.clone()
+                };
+                OpenResult::Loaded(Editor {
+                    path: path.to_path_buf(),
+                    id: element.header.id,
+                    name,
+                    version,
+                    meta: element.header.meta,
+                    body: element.body,
+                    dirty: false,
+                    status: format!("Loaded {}", path.display()),
+                })
+            }
             PromptElementKind::Compound => OpenResult::CompoundReadOnly {
                 path: path.to_path_buf(),
                 summary: format!(
@@ -220,6 +244,36 @@ mod tests {
             OpenResult::Loaded(_) => panic!("editor should not load a compound"),
             OpenResult::Failed(msg) => panic!("unexpected parse failure: {msg}"),
         }
+    }
+
+    #[test]
+    fn editor_autoparse_overrides_version_from_filename_suffix() {
+        // U5-8: a file whose filename carries the `-v<X>-<Y>-<Z>`
+        // suffix makes the editor display the filename's version, not
+        // whatever the on-disk header.version was. The Component-ID
+        // (header.name) auto-fills with the parsed canonical id when
+        // the existing name hasn't been customized.
+        let dir = tempdir("autoparse");
+        let olib = dir.join("olib");
+        // label_into_olib writes header.version = the passed version,
+        // and header.name == header.id by default. Pass version="1.0.0"
+        // while the filename suffix encodes 1.0.2 so the override
+        // behavior is testable.
+        let path =
+            oovra::create::label_into_olib(&olib, "body", "tone-direct-v1-0-2", "1.0.0", "m")
+                .unwrap();
+
+        let ed = match Editor::open(&path) {
+            OpenResult::Loaded(e) => e,
+            OpenResult::CompoundReadOnly { .. } => panic!("expected Loaded"),
+            OpenResult::Failed(msg) => panic!("unexpected: {msg}"),
+        };
+        // Filename suffix wins for the version display.
+        assert_eq!(ed.version, "1.0.2");
+        // Filesystem Name = full stem (header.id).
+        assert_eq!(ed.id, "tone-direct-v1-0-2");
+        // Component-ID = parsed canonical (header.name auto-filled).
+        assert_eq!(ed.name, "tone-direct");
     }
 
     #[test]

@@ -950,6 +950,47 @@ fn compare_refuses_atom_vs_compound() {
 }
 
 #[test]
+fn fork_version_creates_versioned_sibling() {
+    // s5 library integration mirroring what `oovra fork-version` does:
+    // write a v1.0.0 atom, bump + write a sibling under
+    // `<canonical>-v1-0-1.md`, then re-parse and assert the new file
+    // carries the bumped version and a header id matching its stem.
+    use oovra::header::{
+        bump_version, compose_versioned_filename, parse_filename_version, BumpKind,
+    };
+    let tmp = tempdir_for_test("fork-version");
+    let olib = tmp.join("olib");
+    let original = oovra::create::label_into_olib(&olib, "body", "atom", "1.0.0", "m").unwrap();
+
+    let element = oovra::parse_file(&original).unwrap();
+    let new_ver = bump_version(&element.header.version, BumpKind::Patch).unwrap();
+    assert_eq!(new_ver, "1.0.1");
+
+    let stem = original.file_stem().unwrap().to_str().unwrap();
+    let (canonical, _) = parse_filename_version(stem);
+    assert_eq!(canonical, "atom");
+
+    let new_stem = compose_versioned_filename(&canonical, &new_ver).unwrap();
+    assert_eq!(new_stem, "atom-v1-0-1");
+
+    let new_path = olib.join(format!("{new_stem}.md"));
+    let mut new_element = element.clone();
+    new_element.header.id = new_stem.clone();
+    new_element.header.name = canonical.clone();
+    new_element.header.version = new_ver.clone();
+    oovra::write(&new_element, &new_path).unwrap();
+
+    let reread = oovra::parse_file(&new_path).unwrap();
+    assert_eq!(reread.header.id, "atom-v1-0-1");
+    assert_eq!(reread.header.name, "atom");
+    assert_eq!(reread.header.version, "1.0.1");
+
+    // Both files coexist; the original is untouched.
+    let original_reread = oovra::parse_file(&original).unwrap();
+    assert_eq!(original_reread.header.version, "1.0.0");
+}
+
+#[test]
 fn discover_finds_two_nested_olibs() {
     // s1 integration: build a tree with two olib dirs at different depths,
     // assert discover() returns both with the right .md counts.
@@ -989,7 +1030,7 @@ fn bump_version_round_trips_an_atom() {
     // s4 library integration: write an atom, bump its version through the
     // header::bump_version helper, write it back via oovra::write, then
     // re-parse and assert the new version landed.
-    use oovra::header::{BumpKind, bump_version};
+    use oovra::header::{bump_version, BumpKind};
     let tmp = tempdir_for_test("bump-version");
     let olib = tmp.join("olib");
     let path = oovra::create::label_into_olib(&olib, "body", "atom", "1.2.3", "m").unwrap();

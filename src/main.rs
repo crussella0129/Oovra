@@ -61,6 +61,9 @@ enum Command {
     /// Bump the semver version of a prompt element file (in place)
     BumpVersion(BumpVersionArgs),
 
+    /// Fork a versioned sibling of a prompt element (writes a new file)
+    ForkVersion(ForkVersionArgs),
+
     /// Migrate a v0.1 library to v0.2 schema in place
     Migrate(MigrateArgs),
 }
@@ -221,6 +224,16 @@ struct BumpVersionArgs {
 }
 
 #[derive(clap::Args, Debug)]
+struct ForkVersionArgs {
+    /// Existing prompt element file to fork
+    path: PathBuf,
+
+    /// Which segment to bump for the new sibling
+    #[arg(long, value_enum, default_value = "patch")]
+    bump: BumpFlag,
+}
+
+#[derive(clap::Args, Debug)]
 struct MigrateArgs {
     /// Library directory to migrate in place. Recursive. Run in a clean
     /// Git working directory so the diff is auditable.
@@ -238,6 +251,7 @@ fn main() -> anyhow::Result<()> {
         Command::Discover(args) => run_discover(args),
         Command::Inspect(args) => run_inspect(args, opts),
         Command::BumpVersion(args) => run_bump_version(args, opts),
+        Command::ForkVersion(args) => run_fork_version(args, opts),
         Command::Migrate(args) => run_migrate(args),
     }
 }
@@ -906,6 +920,50 @@ fn run_bump_version(args: BumpVersionArgs, opts: ParseOptions) -> anyhow::Result
         old.dimmed(),
         new.green(),
         args.path.display()
+    );
+    Ok(())
+}
+
+fn run_fork_version(args: ForkVersionArgs, opts: ParseOptions) -> anyhow::Result<()> {
+    let mut element = parse_file_with(&args.path, opts)
+        .with_context(|| format!("reading {}", args.path.display()))?;
+    let old_ver = element.header.version.clone();
+    let new_ver = oovra::header::bump_version(&old_ver, args.bump.into())
+        .map_err(|e| anyhow!("bumping {}: {}", args.path.display(), e))?;
+
+    // Canonical id = stem with any existing -v<X>-<Y>-<Z> suffix stripped.
+    let stem = args
+        .path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow!("could not read stem from {}", args.path.display()))?;
+    let (canonical, _existing) = oovra::header::parse_filename_version(stem);
+    let new_stem = oovra::header::compose_versioned_filename(&canonical, &new_ver)
+        .map_err(|e| anyhow!("composing new filename: {e}"))?;
+
+    let parent = args
+        .path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let new_path = parent.join(format!("{new_stem}.md"));
+
+    // The new file's id is its full stem; name keeps the canonical id so
+    // the GUI can display lineage. Version is the bumped one.
+    element.header.id = new_stem.clone();
+    element.header.name = canonical.clone();
+    element.header.version = new_ver.clone();
+
+    write(&element, &new_path).with_context(|| format!("writing {}", new_path.display()))?;
+
+    println!(
+        "{} {} v{} -> {} v{} at {}",
+        "Forked".green().bold(),
+        canonical.cyan(),
+        old_ver.dimmed(),
+        new_stem.cyan(),
+        new_ver.green(),
+        new_path.display()
     );
     Ok(())
 }

@@ -10,5 +10,6 @@ sprints and reflects the work currently in flight.
 
 ## (empty — between sprints)
 
-Sprint s3 is closed. Next pickup per `/sprints/roadmap.md`: **s4 —
-diff / versioning view**.
+Sprint s4 is closed. Next pickup per `/sprints/roadmap.md`:
+**s5 — WASM filesystem shim + Trunk pipeline** (recommended) or
+s6 — egui Panel-alias migration (lower-effort).

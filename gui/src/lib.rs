@@ -14,7 +14,9 @@
 
 mod app;
 mod canvas;
+mod compare;
 mod editor;
 pub use app::OovraApp;
 pub use canvas::CanvasState;
+pub use compare::CompareState;
 pub use editor::{Editor, OpenResult};

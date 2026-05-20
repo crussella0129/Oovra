@@ -984,6 +984,27 @@ fn discover_finds_two_nested_olibs() {
     assert_eq!(counts, vec![2, 1]);
 }
 
+#[test]
+fn bump_version_round_trips_an_atom() {
+    // s4 library integration: write an atom, bump its version through the
+    // header::bump_version helper, write it back via oovra::write, then
+    // re-parse and assert the new version landed.
+    use oovra::header::{BumpKind, bump_version};
+    let tmp = tempdir_for_test("bump-version");
+    let olib = tmp.join("olib");
+    let path = oovra::create::label_into_olib(&olib, "body", "atom", "1.2.3", "m").unwrap();
+
+    let mut element = oovra::parse_file(&path).unwrap();
+    assert_eq!(element.header.version, "1.2.3");
+
+    element.header.version = bump_version(&element.header.version, BumpKind::Patch).unwrap();
+    oovra::write(&element, &path).unwrap();
+
+    let reread = oovra::parse_file(&path).unwrap();
+    assert_eq!(reread.header.version, "1.2.4");
+    assert_eq!(reread.header.id, "atom"); // id unchanged
+}
+
 /// Lightweight tempdir helper. Creates a unique directory under
 /// `target/tmp/<name>-<pid>/` that lives for the duration of the test process.
 fn tempdir_for_test(name: &str) -> std::path::PathBuf {

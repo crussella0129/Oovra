@@ -234,6 +234,40 @@ pub fn is_valid_semver(s: &str) -> bool {
     semver::Version::parse(s).is_ok()
 }
 
+/// Kind of semver bump applied by [`bump_version`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BumpKind {
+    /// `1.2.3` -> `1.2.4`. Small edits; default for typical revisions.
+    Patch,
+    /// `1.2.3` -> `1.3.0`. New behavior added, backward-compatible.
+    Minor,
+    /// `1.2.3` -> `2.0.0`. Breaking — the atom's intent or surface changed.
+    Major,
+}
+
+/// Bump a semver string by `kind`. Strips pre-release / build-metadata
+/// segments on bump, matching what `cargo` does internally on bumps.
+/// Returns the bumped version string, or an error message if `v` is not
+/// parseable semver.
+pub fn bump_version(v: &str, kind: BumpKind) -> std::result::Result<String, String> {
+    let mut ver = semver::Version::parse(v).map_err(|e| format!("not valid semver: {e}"))?;
+    match kind {
+        BumpKind::Patch => ver.patch += 1,
+        BumpKind::Minor => {
+            ver.minor += 1;
+            ver.patch = 0;
+        }
+        BumpKind::Major => {
+            ver.major += 1;
+            ver.minor = 0;
+            ver.patch = 0;
+        }
+    }
+    ver.pre = semver::Prerelease::EMPTY;
+    ver.build = semver::BuildMetadata::EMPTY;
+    Ok(ver.to_string())
+}
+
 /// Validate RFC 3339 timestamp (a strict subset of ISO 8601 sufficient for
 /// timestamps with timezone).
 pub fn is_valid_rfc3339(s: &str) -> bool {
@@ -300,6 +334,41 @@ mod tests {
         assert_eq!(slugify("   "), None);
         assert_eq!(slugify("___"), None);
         assert_eq!(slugify("!@#$%"), None);
+    }
+
+    #[test]
+    fn bump_version_patch() {
+        assert_eq!(bump_version("1.2.3", BumpKind::Patch).unwrap(), "1.2.4");
+        assert_eq!(bump_version("0.0.0", BumpKind::Patch).unwrap(), "0.0.1");
+    }
+
+    #[test]
+    fn bump_version_minor_resets_patch() {
+        assert_eq!(bump_version("1.2.3", BumpKind::Minor).unwrap(), "1.3.0");
+    }
+
+    #[test]
+    fn bump_version_major_resets_minor_and_patch() {
+        assert_eq!(bump_version("1.2.3", BumpKind::Major).unwrap(), "2.0.0");
+    }
+
+    #[test]
+    fn bump_version_strips_pre_and_build() {
+        assert_eq!(
+            bump_version("1.2.3-rc1+sha", BumpKind::Patch).unwrap(),
+            "1.2.4"
+        );
+        assert_eq!(
+            bump_version("0.4.0-alpha", BumpKind::Minor).unwrap(),
+            "0.5.0"
+        );
+    }
+
+    #[test]
+    fn bump_version_rejects_garbage() {
+        assert!(bump_version("not-a-version", BumpKind::Patch).is_err());
+        assert!(bump_version("", BumpKind::Patch).is_err());
+        assert!(bump_version("1.0", BumpKind::Patch).is_err());
     }
 
     #[test]

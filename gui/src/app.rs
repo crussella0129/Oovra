@@ -13,9 +13,11 @@
 
 use std::path::{Path, PathBuf};
 
+use oovra::diff::DiffReport;
 use oovra::header::{is_kebab_case, slugify};
 
 use crate::canvas::CanvasState;
+use crate::compare::CompareState;
 use crate::editor::{Editor, OpenResult};
 
 /// Which view is active in the central panel.
@@ -24,6 +26,7 @@ pub(crate) enum CentralView {
     #[default]
     Editor,
     Canvas,
+    Compare,
 }
 
 /// Application state. Persisted across runs via eframe's persistence
@@ -68,6 +71,9 @@ pub struct OovraApp {
     /// Working set for the autocompose canvas (sprint s3).
     #[serde(skip)]
     canvas: CanvasState,
+    /// Working set for the Compare view (sprint s4).
+    #[serde(skip)]
+    compare: CompareState,
     /// Which tab is showing in the central panel.
     #[serde(skip)]
     view: CentralView,
@@ -101,6 +107,7 @@ impl Default for OovraApp {
             editor: None,
             compound_msg: None,
             canvas: CanvasState::new(),
+            compare: CompareState::new(),
             view: CentralView::Editor,
             status: String::new(),
         }
@@ -140,6 +147,10 @@ impl OovraApp {
         self.loaded = None;
         self.atom_index.clear();
         self.clear_atom_selection();
+        // The Compare picks reference ids in the previous olib — clear
+        // them so the picker doesn't show stale selections that no
+        // longer resolve.
+        self.compare = CompareState::new();
     }
 
     fn clear_atom_selection(&mut self) {
@@ -357,6 +368,98 @@ impl OovraApp {
         }
     }
 
+    /// Render the Compare view: two ComboBox pickers driving a
+    /// live-recomputed DiffReport.
+    fn render_compare(&mut self, ui: &mut egui::Ui) {
+        if self.atom_index.is_empty() {
+            ui.weak("(no olib loaded — pick one on the left to compare its components)");
+            return;
+        }
+
+        // Owned snapshot for the closure captures.
+        let ids: Vec<String> = self.atom_index.iter().map(|a| a.id.clone()).collect();
+
+        // A picker
+        let mut a_changed: Option<Option<String>> = None;
+        let a_text = self
+            .compare
+            .a
+            .as_deref()
+            .unwrap_or("(pick a component)")
+            .to_owned();
+        ui.horizontal(|ui| {
+            ui.label("A:");
+            egui::ComboBox::from_id_salt("compare_a")
+                .selected_text(a_text)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(self.compare.a.is_none(), "(none)")
+                        .clicked()
+                    {
+                        a_changed = Some(None);
+                    }
+                    for id in &ids {
+                        let is_sel = self.compare.a.as_deref() == Some(id);
+                        if ui.selectable_label(is_sel, id).clicked() {
+                            a_changed = Some(Some(id.clone()));
+                        }
+                    }
+                });
+        });
+        if let Some(new) = a_changed {
+            self.compare.set_a(new, self.loaded.as_ref());
+        }
+
+        // B picker
+        let mut b_changed: Option<Option<String>> = None;
+        let b_text = self
+            .compare
+            .b
+            .as_deref()
+            .unwrap_or("(pick a component)")
+            .to_owned();
+        ui.horizontal(|ui| {
+            ui.label("B:");
+            egui::ComboBox::from_id_salt("compare_b")
+                .selected_text(b_text)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(self.compare.b.is_none(), "(none)")
+                        .clicked()
+                    {
+                        b_changed = Some(None);
+                    }
+                    for id in &ids {
+                        let is_sel = self.compare.b.as_deref() == Some(id);
+                        if ui.selectable_label(is_sel, id).clicked() {
+                            b_changed = Some(Some(id.clone()));
+                        }
+                    }
+                });
+        });
+        if let Some(new) = b_changed {
+            self.compare.set_b(new, self.loaded.as_ref());
+        }
+
+        ui.separator();
+
+        match &self.compare.report {
+            None => {
+                let hint = match (&self.compare.a, &self.compare.b) {
+                    (Some(a), Some(b)) if a == b => "Pick a different second component.",
+                    _ => "Pick two components above to compare.",
+                };
+                ui.weak(hint);
+            }
+            Some(Err(msg)) => {
+                ui.label(egui::RichText::new(msg).color(egui::Color32::from_rgb(220, 80, 80)));
+            }
+            Some(Ok(report)) => {
+                render_diff_report(ui, report);
+            }
+        }
+    }
+
     fn render_editor(&mut self, ui: &mut egui::Ui) {
         // Three states: editor loaded; compound (read-only msg); nothing.
         if let Some(ed) = &mut self.editor {
@@ -413,6 +516,18 @@ impl OovraApp {
                 }
                 if ui.button("Reload").clicked() {
                     let _ = ed.reload();
+                }
+                if ui.button("Bump patch").clicked() {
+                    match oovra::header::bump_version(&ed.version, oovra::header::BumpKind::Patch) {
+                        Ok(new) => {
+                            ed.version = new;
+                            ed.dirty = true;
+                            ed.status = "patch bumped — Save to persist".to_owned();
+                        }
+                        Err(e) => {
+                            ed.status = format!("Bump failed: {e}");
+                        }
+                    }
                 }
                 ui.separator();
                 ui.weak(&ed.status);
@@ -524,13 +639,141 @@ impl eframe::App for OovraApp {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.view, CentralView::Editor, "Editor");
                 ui.selectable_value(&mut self.view, CentralView::Canvas, "Canvas");
+                ui.selectable_value(&mut self.view, CentralView::Compare, "Compare");
             });
             ui.separator();
             match self.view {
                 CentralView::Editor => self.render_editor(ui),
                 CentralView::Canvas => self.render_canvas(ui),
+                CentralView::Compare => self.render_compare(ui),
             }
         });
+    }
+}
+
+/// Render a `DiffReport` into the given Ui. Atom vs atom: field
+/// changes table + colored body unified diff. Compound vs compound:
+/// added / removed / version_changed / moved lists.
+fn render_diff_report(ui: &mut egui::Ui, report: &DiffReport) {
+    const GREEN: egui::Color32 = egui::Color32::from_rgb(80, 180, 80);
+    const RED: egui::Color32 = egui::Color32::from_rgb(220, 80, 80);
+    const HUNK: egui::Color32 = egui::Color32::from_rgb(120, 160, 220);
+    const DIM: egui::Color32 = egui::Color32::from_rgb(160, 160, 160);
+
+    match report {
+        DiffReport::Content(c) => {
+            ui.label(egui::RichText::new(format!("{} → {}  (atoms)", c.a_id, c.b_id)).strong());
+            ui.add_space(2.0);
+
+            if c.field_changes.is_empty() {
+                ui.label(egui::RichText::new("metadata: unchanged").color(DIM));
+            } else {
+                ui.label("metadata changes:");
+                egui::Grid::new("compare_field_changes")
+                    .num_columns(3)
+                    .min_col_width(80.0)
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new("field").color(DIM));
+                        ui.label(egui::RichText::new("before").color(DIM));
+                        ui.label(egui::RichText::new("after").color(DIM));
+                        ui.end_row();
+                        for fc in &c.field_changes {
+                            ui.label(&fc.field);
+                            ui.label(egui::RichText::new(&fc.before).color(RED));
+                            ui.label(egui::RichText::new(&fc.after).color(GREEN));
+                            ui.end_row();
+                        }
+                    });
+            }
+
+            ui.add_space(6.0);
+            if c.bodies_equal {
+                ui.label(egui::RichText::new("body: unchanged").color(DIM));
+            } else {
+                ui.label("body diff:");
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for line in c.body_unified_diff.lines() {
+                            let color = if line.starts_with("+++") || line.starts_with("---") {
+                                Some(DIM)
+                            } else if line.starts_with('+') {
+                                Some(GREEN)
+                            } else if line.starts_with('-') {
+                                Some(RED)
+                            } else if line.starts_with("@@") {
+                                Some(HUNK)
+                            } else {
+                                None
+                            };
+                            let mut rt = egui::RichText::new(line).monospace();
+                            if let Some(c) = color {
+                                rt = rt.color(c);
+                            }
+                            ui.add(egui::Label::new(rt).selectable(true));
+                        }
+                    });
+            }
+        }
+        DiffReport::Structural(s) => {
+            ui.label(egui::RichText::new(format!("{} → {}  (compounds)", s.a_id, s.b_id)).strong());
+            ui.add_space(2.0);
+            if s.recipes_equal {
+                ui.label(egui::RichText::new("recipes: identical").color(DIM));
+                return;
+            }
+            if !s.added.is_empty() {
+                ui.label("added inputs:");
+                for pi in &s.added {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "  + [{}] {} @ {}",
+                            pi.position, pi.input.id, pi.input.version
+                        ))
+                        .color(GREEN),
+                    );
+                }
+            }
+            if !s.removed.is_empty() {
+                ui.label("removed inputs:");
+                for pi in &s.removed {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "  - [{}] {} @ {}",
+                            pi.position, pi.input.id, pi.input.version
+                        ))
+                        .color(RED),
+                    );
+                }
+            }
+            if !s.version_changed.is_empty() {
+                ui.label("version-changed inputs:");
+                for v in &s.version_changed {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("  ~").strong());
+                        ui.label(&v.id);
+                        ui.label(":");
+                        ui.label(egui::RichText::new(&v.before_version).color(RED));
+                        ui.label("→");
+                        ui.label(egui::RichText::new(&v.after_version).color(GREEN));
+                    });
+                }
+            }
+            if !s.moved.is_empty() {
+                ui.label("moved inputs:");
+                for m in &s.moved {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("  ↔").color(HUNK));
+                        ui.label(format!("{} @ {}", m.id, m.version));
+                        ui.label(":");
+                        ui.label(egui::RichText::new(format!("pos {}", m.before_pos)).color(RED));
+                        ui.label("→");
+                        ui.label(egui::RichText::new(format!("pos {}", m.after_pos)).color(GREEN));
+                    });
+                }
+            }
+        }
     }
 }
 

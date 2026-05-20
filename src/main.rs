@@ -58,6 +58,9 @@ enum Command {
     /// Inspect a single prompt element file (read-only)
     Inspect(InspectArgs),
 
+    /// Bump the semver version of a prompt element file (in place)
+    BumpVersion(BumpVersionArgs),
+
     /// Migrate a v0.1 library to v0.2 schema in place
     Migrate(MigrateArgs),
 }
@@ -190,6 +193,33 @@ struct InspectArgs {
     format: String,
 }
 
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum BumpFlag {
+    Patch,
+    Minor,
+    Major,
+}
+
+impl From<BumpFlag> for oovra::header::BumpKind {
+    fn from(b: BumpFlag) -> Self {
+        match b {
+            BumpFlag::Patch => oovra::header::BumpKind::Patch,
+            BumpFlag::Minor => oovra::header::BumpKind::Minor,
+            BumpFlag::Major => oovra::header::BumpKind::Major,
+        }
+    }
+}
+
+#[derive(clap::Args, Debug)]
+struct BumpVersionArgs {
+    /// Prompt element file to bump
+    path: PathBuf,
+
+    /// Which segment to bump
+    #[arg(long, value_enum, default_value = "patch")]
+    bump: BumpFlag,
+}
+
 #[derive(clap::Args, Debug)]
 struct MigrateArgs {
     /// Library directory to migrate in place. Recursive. Run in a clean
@@ -207,6 +237,7 @@ fn main() -> anyhow::Result<()> {
         Command::Compare(args) => run_compare(args, opts),
         Command::Discover(args) => run_discover(args),
         Command::Inspect(args) => run_inspect(args, opts),
+        Command::BumpVersion(args) => run_bump_version(args, opts),
         Command::Migrate(args) => run_migrate(args),
     }
 }
@@ -856,6 +887,25 @@ fn run_inspect(args: InspectArgs, opts: ParseOptions) -> anyhow::Result<()> {
         "body".dimmed(),
         body_lines,
         body_chars
+    );
+    Ok(())
+}
+
+fn run_bump_version(args: BumpVersionArgs, opts: ParseOptions) -> anyhow::Result<()> {
+    let mut element = parse_file_with(&args.path, opts)
+        .with_context(|| format!("reading {}", args.path.display()))?;
+    let old = element.header.version.clone();
+    let new = oovra::header::bump_version(&old, args.bump.into())
+        .map_err(|e| anyhow!("bumping {}: {}", args.path.display(), e))?;
+    element.header.version = new.clone();
+    write(&element, &args.path).with_context(|| format!("writing {}", args.path.display()))?;
+    println!(
+        "{} {}: {} -> {} at {}",
+        "Bumped".green().bold(),
+        element.header.id.cyan(),
+        old.dimmed(),
+        new.green(),
+        args.path.display()
     );
     Ok(())
 }

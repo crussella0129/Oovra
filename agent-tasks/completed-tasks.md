@@ -266,3 +266,78 @@ as tasks are dispatched from `agent-tasks.md`. Persists across sprints.
 - Sprint-tests docs authored. Acceptance criteria met. Window
   left up for visual review. Roadmap next: s4 — diff/versioning
   view.
+
+- **s3 polish** (2026-05-20) — live preview rewritten from a
+  bordered monospace `TextEdit` to a selectable wrapped `Label`
+  per user feedback — same font as the rest of the UI.
+
+---
+
+## Sprint s4 — Diff / versioning view
+
+### Library
+
+- **L4.1** (2026-05-20) — Added `BumpKind { Patch, Minor, Major }`
+  enum and `bump_version(v: &str, kind: BumpKind)
+  -> Result<String, String>` to `src/header.rs`. Uses
+  `semver::Version`; strips pre-release / build-metadata on bump.
+- **L4.3** (2026-05-20) — Five `#[test]`s in `header::tests`
+  (patch / minor / major / pre+build stripped / garbage rejected).
+
+### CLI
+
+- **C4.1–C4.3** (2026-05-20) — Added `Command::BumpVersion` +
+  `run_bump_version` to `src/main.rs`. Subcommand:
+  `oovra bump-version <FILE> [--bump patch|minor|major]`.
+  Prints `Bumped <id>: <old> -> <new> at <path>`.
+- **C4.4** (2026-05-20) — Added
+  `bump_version_round_trips_an_atom` integration test in
+  `tests/end_to_end.rs`: label_into_olib → parse → bump → write
+  → re-parse → assert new version.
+
+### GUI
+
+- **G4.1** (2026-05-20) — `CentralView::Compare` variant + a
+  third selectable_value in the tab row.
+- **G4.2** (2026-05-20) — Added `gui/src/canvas.rs`'s sibling
+  `gui/src/compare.rs` with `CompareState { a, b, report }` and
+  methods `set_a / set_b / recompute`. Four unit tests covering
+  empty-pick / content / mixed-kind / same-id paths.
+- **G4.3** (2026-05-20) — Implemented `render_compare` in
+  `app.rs`: two ComboBox pickers populated from the loaded olib;
+  router for None / Err / Ok report states. New free function
+  `render_diff_report` renders both DiffReport variants —
+  Content with a 3-column field-changes Grid and a colored
+  body unified diff; Structural with added / removed /
+  version_changed / moved sections.
+- **G4.4** (2026-05-20) — Added a `Bump patch` button in
+  `render_editor`'s button row. Calls `bump_version` and updates
+  `editor.version` in memory; dirty flag flips so the next Save
+  persists.
+- **Clear-on-olib-change** (2026-05-20) — `clear_olib_selection`
+  resets `compare` too so stale picks don't survive.
+
+### Test Phase
+
+- **T4.1** (2026-05-20) — `cargo test -p oovra` **70 PASS** (41
+  lib unit + 4 main unit + 25 integration; was 36 / 4 / 24).
+- **T4.2** (2026-05-20) — `cargo test -p oovra-gui` **14 PASS**
+  (10 prior + 4 new compare).
+- **T4.3** (2026-05-20) — `cargo build --target
+  wasm32-unknown-unknown -p oovra-gui` PASS, 13.25s.
+- **T4.4** (2026-05-20) — `oovra bump-version` CLI smoke against
+  the mock library — bumped tone-direct 1.0.0 → 1.0.1, verified
+  with `oovra inspect`.
+- **T4.5** (2026-05-20) — `oovra-gui` window up PID 6164 with
+  the new Compare tab + Bump patch button.
+- **T4.6** (2026-05-20) — WSL Ubuntu `cargo test -p oovra` PASS,
+  25 integration tests + lib + main, exit 0. Cross-platform
+  invariant from CLAUDE.md still holds.
+
+### Sprint s4 close
+
+- Sprint-tests docs authored at `sprints/s4/sprint-tests/`.
+  Acceptance criteria all satisfied. Window left up for visual
+  review. Roadmap next: **s5 — WASM filesystem shim + Trunk
+  pipeline** (higher-leverage) or s6 — egui Panel-alias
+  migration (lower-effort cleanup).
